@@ -5,10 +5,9 @@
 # accumulating wisdom in a grand memorial across lives.
 #
 # Usage:
-#   ./.immortals/scripts/immortals.sh --hours 8 --sleep 30
-#   ./.immortals/scripts/immortals.sh --hours 8 --no-sleep          # prevent idle sleep
-#   ./.immortals/scripts/immortals.sh --hours 8 --timeout 30        # 30min per life
-#   ./.immortals/scripts/immortals.sh --iterations 3 --sleep 5
+#   ./.immortals/scripts/immortals.sh --new-world genesis --hours 8
+#   ./.immortals/scripts/immortals.sh --continue --hours 8 --no-sleep
+#   ./.immortals/scripts/immortals.sh --world genesis --iterations 3
 #   ./.immortals/scripts/immortals.sh --single --budget 5
 #   ./.immortals/scripts/immortals.sh --status
 #   ./.immortals/scripts/immortals.sh --hours 24 --dry-run
@@ -35,61 +34,88 @@ STATUS_MODE=false
 NO_SLEEP=true
 TIMEOUT_MINUTES=60
 
+# World flags
+NEW_WORLD=""
+INHERIT_FROM=""
+WORLD_FLAG=""
+CONTINUE_FLAG=false
+
 # ─── Name Pool (20 mythological names) ──────────────────────────
 NAMES=(atlas prometheus hermes minerva orpheus
        cassandra phoenix selene theseus aurora
        daedalus calliope zephyr artemis helios
        persephone icarus andromeda orion echo)
 
-# ─── Paths (relative to .immortals/) ─────────────────────────────
+# ─── Static Paths ───────────────────────────────────────────────
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 IMMORTALS_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 REPO_ROOT="$(cd "$IMMORTALS_DIR/.." && pwd)"
 PROMPT_FILE="$SCRIPT_DIR/immortal-prompt.md"
-DESTINY_FILE="$IMMORTALS_DIR/destiny-prompt.md"
-MEMORIAL_FILE="$IMMORTALS_DIR/grand-memorial.md"
-LIVES_DIR="$IMMORTALS_DIR/lives"
-LOG_DIR="$IMMORTALS_DIR/logs"
-NAME_INDEX_FILE="$IMMORTALS_DIR/.name-index"
+ACTIVE_FILE="$IMMORTALS_DIR/.active"
+WORLDS_DIR="$IMMORTALS_DIR/worlds"
+WORLDS_LOG="$IMMORTALS_DIR/worlds-log.md"
 
 # ─── Argument Parsing ───────────────────────────────────────────
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --hours)      HOURS="$2";         shift 2 ;;
-    --iterations) ITERATIONS="$2";    shift 2 ;;
-    --sleep)      SLEEP_MINUTES="$2"; shift 2 ;;
-    --budget)     BUDGET="$2";        shift 2 ;;
-    --dry-run)    DRY_RUN=true;       shift   ;;
-    --single)     ITERATIONS=1;       shift   ;;
-    --no-sleep)   NO_SLEEP=true;      shift   ;;
-    --timeout)    TIMEOUT_MINUTES="$2"; shift 2 ;;
-    --status)     STATUS_MODE=true;   shift   ;;
+    --hours)        HOURS="$2";           shift 2 ;;
+    --iterations)   ITERATIONS="$2";      shift 2 ;;
+    --sleep)        SLEEP_MINUTES="$2";   shift 2 ;;
+    --budget)       BUDGET="$2";          shift 2 ;;
+    --dry-run)      DRY_RUN=true;         shift   ;;
+    --single)       ITERATIONS=1;         shift   ;;
+    --no-sleep)     NO_SLEEP=true;        shift   ;;
+    --timeout)      TIMEOUT_MINUTES="$2"; shift 2 ;;
+    --status)       STATUS_MODE=true;     shift   ;;
+    --new-world)    NEW_WORLD="$2";       shift 2 ;;
+    --inherit-from) INHERIT_FROM="$2";    shift 2 ;;
+    --world)        WORLD_FLAG="$2";      shift 2 ;;
+    --continue)     CONTINUE_FLAG=true;   shift   ;;
     -h|--help)
       echo "Immortals — Autonomous Life Cycle Runner"
       echo ""
-      echo "Usage: ./.immortals/scripts/immortals.sh [OPTIONS]"
+      echo "Usage: ./.immortals/scripts/immortals.sh [WORLD] [OPTIONS]"
+      echo ""
+      echo "World flags (pick one):"
+      echo "  --new-world NAME         Create a new world and set as active"
+      echo "  --inherit-from NAME      With --new-world, copy memorial from existing world"
+      echo "  --world NAME             Resume a specific existing world"
+      echo "  --continue               Resume the active world (from .active)"
+      echo "  (none)                   Auto-continue active world, or error if none"
       echo ""
       echo "Options:"
-      echo "  --hours N        Run for N hours (default: 8)"
+      echo "  --hours N        Run for N hours"
       echo "  --iterations N   Run exactly N cycles"
       echo "  --sleep N        Minutes between cycles (default: 30)"
       echo "  --budget N       Max USD per cycle (optional)"
-      echo "  --timeout N      Max minutes per life before kill (default: 20)"
+      echo "  --timeout N      Max minutes per life before kill (default: 60)"
       echo "  --no-sleep       Prevent macOS idle sleep via caffeinate"
       echo "  --dry-run        Preview without executing"
       echo "  --single         One life only (alias for --iterations 1)"
       echo "  --status         Print summary and exit"
       echo "  -h, --help       Show this help"
       echo ""
-      echo "Stopping conditions: --hours OR --iterations (at least one required)."
-      echo "If both provided, stops at whichever comes first."
+      echo "Stopping conditions: --hours OR --iterations (at least one required,"
+      echo "unless --status). If both provided, stops at whichever comes first."
       echo ""
-      echo "Files:"
-      echo "  .immortals/scripts/immortal-prompt.md  System prompt for each life"
-      echo "  .immortals/destiny-prompt.md             Destiny/mission for this run"
-      echo "  .immortals/grand-memorial.md            Accumulated wisdom across lives"
-      echo "  .immortals/lives/                       Individual life logs"
-      echo "  .immortals/logs/                        Raw Claude session logs"
+      echo "Examples:"
+      echo "  # Create a new world and start a session"
+      echo "  ./immortals.sh --new-world genesis --hours 8 --no-sleep"
+      echo ""
+      echo "  # Continue where you left off"
+      echo "  ./immortals.sh --continue --hours 4"
+      echo ""
+      echo "  # Start a new experiment, inherit wisdom"
+      echo "  ./immortals.sh --new-world experiment --inherit-from genesis --hours 8"
+      echo ""
+      echo "  # Switch to specific world"
+      echo "  ./immortals.sh --world genesis --iterations 3"
+      echo ""
+      echo "  # Global status (all worlds)"
+      echo "  ./immortals.sh --status"
+      echo ""
+      echo "  # Per-world status"
+      echo "  ./immortals.sh --world genesis --status"
       exit 0
       ;;
     *)
@@ -99,18 +125,345 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+# ─── Validate World Flag Combinations ──────────────────────────
+world_flag_count=0
+[[ -n "$NEW_WORLD" ]] && world_flag_count=$((world_flag_count + 1))
+[[ -n "$WORLD_FLAG" ]] && world_flag_count=$((world_flag_count + 1))
+$CONTINUE_FLAG && world_flag_count=$((world_flag_count + 1))
+
+if [[ $world_flag_count -gt 1 ]]; then
+  echo "Error: --new-world, --world, and --continue are mutually exclusive."
+  exit 1
+fi
+
+if [[ -n "$INHERIT_FROM" && -z "$NEW_WORLD" ]]; then
+  echo "Error: --inherit-from requires --new-world."
+  exit 1
+fi
+
+# ─── Legacy Migration ──────────────────────────────────────────
+migrate_legacy() {
+  echo -e "${YELLOW}Detected legacy .immortals/ structure (no worlds/).${NC}"
+  echo "  Migrating to worlds/legacy/..."
+
+  local legacy_dir="$WORLDS_DIR/legacy"
+  mkdir -p "$legacy_dir/lives" "$legacy_dir/logs"
+
+  # Move lives
+  if [[ -d "$IMMORTALS_DIR/lives" ]]; then
+    if compgen -G "$IMMORTALS_DIR/lives/*" > /dev/null 2>&1; then
+      mv "$IMMORTALS_DIR/lives"/* "$legacy_dir/lives/" 2>/dev/null || true
+    fi
+    rmdir "$IMMORTALS_DIR/lives" 2>/dev/null || true
+  fi
+
+  # Move logs
+  if [[ -d "$IMMORTALS_DIR/logs" ]]; then
+    if compgen -G "$IMMORTALS_DIR/logs/*" > /dev/null 2>&1; then
+      mv "$IMMORTALS_DIR/logs"/* "$legacy_dir/logs/" 2>/dev/null || true
+    fi
+    rmdir "$IMMORTALS_DIR/logs" 2>/dev/null || true
+  fi
+
+  # Move memorial
+  if [[ -f "$IMMORTALS_DIR/grand-memorial.md" ]]; then
+    mv "$IMMORTALS_DIR/grand-memorial.md" "$legacy_dir/grand-memorial.md"
+  fi
+
+  # Move destiny
+  if [[ -f "$IMMORTALS_DIR/destiny-prompt.md" ]]; then
+    mv "$IMMORTALS_DIR/destiny-prompt.md" "$legacy_dir/destiny-prompt.md"
+  fi
+
+  # Move name index
+  if [[ -f "$IMMORTALS_DIR/.name-index" ]]; then
+    mv "$IMMORTALS_DIR/.name-index" "$legacy_dir/.name-index"
+  fi
+
+  # Compute life counter from existing lives
+  local highest=0
+  local count=0
+  if [[ -d "$legacy_dir/lives" ]]; then
+    for f in "$legacy_dir/lives"/*.md; do
+      [[ -f "$f" ]] || continue
+      count=$((count + 1))
+      local base
+      base=$(basename "$f")
+      local num
+      num=$(echo "$base" | grep -o '^[0-9]\+' | sed 's/^0*//')
+      num=${num:-0}
+      if [[ "$num" -gt "$highest" ]] 2>/dev/null; then
+        highest=$num
+      fi
+    done
+  fi
+  local counter=$highest
+  if [[ $count -gt $counter ]]; then
+    counter=$count
+  fi
+  echo "$counter" > "$legacy_dir/.life-counter"
+
+  # Set active world
+  echo "legacy" > "$ACTIVE_FILE"
+
+  # Create worlds log
+  local timestamp
+  timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+  cat > "$WORLDS_LOG" << WLOG_EOF
+# Worlds Log
+
+> Chronicle of all immortal worlds.
+
+---
+
+## legacy — ${timestamp}
+
+**Inherited from**: (migrated from legacy structure)
+
+---
+WLOG_EOF
+
+  echo -e "${GREEN}Migration complete:${NC}"
+  echo "  World: legacy"
+  echo "  Lives: $count"
+  echo "  Life counter: $counter"
+  echo "  Active world set to: legacy"
+  echo ""
+}
+
+# Check for legacy structure and migrate
+if [[ -d "$IMMORTALS_DIR/lives" && ! -d "$WORLDS_DIR" ]]; then
+  migrate_legacy
+fi
+
+# ─── World Resolution ──────────────────────────────────────────
+WORLD_NAME=""
+
+if [[ -n "$NEW_WORLD" ]]; then
+  # Validate name format
+  if ! [[ "$NEW_WORLD" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
+    echo "Error: World name must match [a-z0-9][a-z0-9-]* (lowercase, numbers, hyphens)."
+    echo "  Got: '$NEW_WORLD'"
+    exit 1
+  fi
+
+  # Check for duplicate
+  if [[ -d "$WORLDS_DIR/$NEW_WORLD" ]]; then
+    echo "Error: World '$NEW_WORLD' already exists. Use --world $NEW_WORLD to resume it."
+    exit 1
+  fi
+
+  # Create the world
+  WORLD_NAME="$NEW_WORLD"
+  new_world_dir="$WORLDS_DIR/$WORLD_NAME"
+  mkdir -p "$new_world_dir/lives" "$new_world_dir/logs"
+
+  echo "0" > "$new_world_dir/.life-counter"
+  echo "0" > "$new_world_dir/.name-index"
+
+  # Memorial: inherit or fresh
+  if [[ -n "$INHERIT_FROM" ]]; then
+    source_dir="$WORLDS_DIR/$INHERIT_FROM"
+    if [[ ! -d "$source_dir" ]]; then
+      echo "Error: Source world '$INHERIT_FROM' does not exist. Cannot inherit."
+      rm -rf "$new_world_dir"
+      exit 1
+    fi
+    if [[ -f "$source_dir/grand-memorial.md" ]]; then
+      cp "$source_dir/grand-memorial.md" "$new_world_dir/grand-memorial.md"
+      echo "  Inherited memorial from '$INHERIT_FROM'."
+    else
+      echo "  Warning: Source world '$INHERIT_FROM' has no memorial. Creating fresh."
+      cat > "$new_world_dir/grand-memorial.md" << 'MEMORIAL_EOF'
+# Grand Memorial
+
+> Wisdom accumulated across all immortal lives.
+> Each life adds its reflections here for future lives to learn from.
+
+---
+MEMORIAL_EOF
+    fi
+  else
+    cat > "$new_world_dir/grand-memorial.md" << 'MEMORIAL_EOF'
+# Grand Memorial
+
+> Wisdom accumulated across all immortal lives.
+> Each life adds its reflections here for future lives to learn from.
+
+---
+MEMORIAL_EOF
+  fi
+
+  # Create empty destiny template
+  cat > "$new_world_dir/destiny-prompt.md" << 'DESTINY_EOF'
+# Destiny
+
+> Define the mission for this world's immortals.
+> Edit this file to set the purpose that guides all lives.
+
+(Write your destiny here)
+DESTINY_EOF
+
+  # Set as active world
+  echo "$WORLD_NAME" > "$ACTIVE_FILE"
+
+  # Append to worlds log
+  if [[ ! -f "$WORLDS_LOG" ]]; then
+    cat > "$WORLDS_LOG" << 'WLOG_HEADER_EOF'
+# Worlds Log
+
+> Chronicle of all immortal worlds.
+
+---
+WLOG_HEADER_EOF
+  fi
+
+  wlog_timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+  {
+    echo ""
+    echo "## ${WORLD_NAME} — ${wlog_timestamp}"
+    echo ""
+    if [[ -n "$INHERIT_FROM" ]]; then
+      echo "**Inherited from**: ${INHERIT_FROM}"
+    else
+      echo "**Inherited from**: (none)"
+    fi
+    echo ""
+    echo "---"
+  } >> "$WORLDS_LOG"
+
+  echo -e "${GREEN}Created world '${WORLD_NAME}'.${NC}"
+  [[ -n "$INHERIT_FROM" ]] && echo "  Inherited memorial from: $INHERIT_FROM"
+  echo ""
+
+elif [[ -n "$WORLD_FLAG" ]]; then
+  # Resume specific world
+  if [[ ! -d "$WORLDS_DIR/$WORLD_FLAG" ]]; then
+    echo "Error: World '$WORLD_FLAG' does not exist."
+    echo "Available worlds:"
+    if [[ -d "$WORLDS_DIR" ]]; then
+      for d in "$WORLDS_DIR"/*/; do
+        [[ -d "$d" ]] && echo "  - $(basename "$d")"
+      done
+    else
+      echo "  (none)"
+    fi
+    exit 1
+  fi
+  WORLD_NAME="$WORLD_FLAG"
+  echo "$WORLD_NAME" > "$ACTIVE_FILE"
+
+elif $CONTINUE_FLAG; then
+  # Resume active world
+  if [[ ! -f "$ACTIVE_FILE" ]] || [[ -z "$(cat "$ACTIVE_FILE" 2>/dev/null)" ]]; then
+    echo "Error: No active world. Use --new-world NAME to create one."
+    exit 1
+  fi
+  WORLD_NAME=$(cat "$ACTIVE_FILE")
+  if [[ ! -d "$WORLDS_DIR/$WORLD_NAME" ]]; then
+    echo "Error: Active world '$WORLD_NAME' no longer exists."
+    echo "Available worlds:"
+    if [[ -d "$WORLDS_DIR" ]]; then
+      for d in "$WORLDS_DIR"/*/; do
+        [[ -d "$d" ]] && echo "  - $(basename "$d")"
+      done
+    fi
+    exit 1
+  fi
+
+else
+  # No world flag: implicit continue if .active exists, or global status
+  if $STATUS_MODE; then
+    # Bare --status (no explicit --world) = always global summary
+    WORLD_NAME=""
+  elif [[ -f "$ACTIVE_FILE" ]] && [[ -n "$(cat "$ACTIVE_FILE" 2>/dev/null)" ]]; then
+    WORLD_NAME=$(cat "$ACTIVE_FILE")
+    if [[ ! -d "$WORLDS_DIR/$WORLD_NAME" ]]; then
+      echo "Error: Active world '$WORLD_NAME' no longer exists."
+      echo "Available worlds:"
+      if [[ -d "$WORLDS_DIR" ]]; then
+        for d in "$WORLDS_DIR"/*/; do
+          [[ -d "$d" ]] && echo "  - $(basename "$d")"
+        done
+      fi
+      exit 1
+    fi
+  else
+    echo "Error: No active world. Use one of:"
+    echo "  --new-world NAME    Create a new world"
+    echo "  --world NAME        Resume an existing world"
+    echo "  --continue          Resume the active world"
+    exit 1
+  fi
+fi
+
+# ─── Dynamic Paths (world-scoped) ──────────────────────────────
+if [[ -n "$WORLD_NAME" ]]; then
+  WORLD_DIR="$WORLDS_DIR/$WORLD_NAME"
+  DESTINY_FILE="$WORLD_DIR/destiny-prompt.md"
+  MEMORIAL_FILE="$WORLD_DIR/grand-memorial.md"
+  LIVES_DIR="$WORLD_DIR/lives"
+  LOG_DIR="$WORLD_DIR/logs"
+  NAME_INDEX_FILE="$WORLD_DIR/.name-index"
+  LIFE_COUNTER_FILE="$WORLD_DIR/.life-counter"
+fi
+
 # ─── Status Mode ────────────────────────────────────────────────
 if $STATUS_MODE; then
   echo ""
   echo -e "${BOLD}${BLUE}============================================${NC}"
-  echo -e " ${BOLD}Immortals — Status Report${NC}"
+
+  if [[ -z "$WORLD_NAME" ]]; then
+    # Global status: list all worlds
+    echo -e " ${BOLD}Immortals — Global Status${NC}"
+    echo -e "${BOLD}${BLUE}============================================${NC}"
+    echo ""
+
+    active_world=""
+    if [[ -f "$ACTIVE_FILE" ]]; then
+      active_world=$(cat "$ACTIVE_FILE" 2>/dev/null)
+    fi
+
+    if [[ ! -d "$WORLDS_DIR" ]] || [[ -z "$(ls -A "$WORLDS_DIR" 2>/dev/null)" ]]; then
+      echo "  No worlds yet. Create one with: --new-world NAME"
+    else
+      echo -e "${CYAN}Worlds:${NC}"
+      echo ""
+      for d in "$WORLDS_DIR"/*/; do
+        [[ -d "$d" ]] || continue
+        wname=$(basename "$d")
+        wlives=0
+        if [[ -d "$d/lives" ]]; then
+          wlives=$(find "$d/lives" -maxdepth 1 -name '*.md' -type f 2>/dev/null | wc -l | tr -d ' ')
+        fi
+        wcounter=0
+        if [[ -f "$d/.life-counter" ]]; then
+          wcounter=$(cat "$d/.life-counter" 2>/dev/null || echo 0)
+        fi
+        marker=""
+        if [[ "$wname" == "$active_world" ]]; then
+          marker=" ${GREEN}<- active${NC}"
+        fi
+        echo -e "  ${BOLD}${wname}${NC}  (${wlives} lives, counter: ${wcounter})${marker}"
+      done
+    fi
+
+    echo ""
+    echo -e "${BOLD}${BLUE}============================================${NC}"
+    exit 0
+  fi
+
+  # Per-world status
+  echo -e " ${BOLD}Immortals — Status Report [${WORLD_NAME}]${NC}"
   echo -e "${BOLD}${BLUE}============================================${NC}"
+  echo ""
+
+  echo -e "${CYAN}World:${NC}          $WORLD_NAME"
   echo ""
 
   # Destiny summary
   echo -e "${CYAN}Destiny:${NC}"
   if [[ -f "$DESTINY_FILE" ]]; then
-    # Show first 5 non-empty, non-comment content lines
     grep -v '^#' "$DESTINY_FILE" | grep -v '^\s*$' | head -5 | while IFS= read -r line; do
       echo "  $line"
     done
@@ -120,31 +473,37 @@ if $STATUS_MODE; then
   echo ""
 
   # Lives count
-  local_lives_count=0
-  local_last_life="(none)"
+  status_lives_count=0
+  status_last_life="(none)"
   if [[ -d "$LIVES_DIR" ]]; then
-    local_lives_count=$(find "$LIVES_DIR" -maxdepth 1 -name '*.md' -type f 2>/dev/null | wc -l | tr -d ' ')
-    local_last_file=$(ls -t "$LIVES_DIR"/*.md 2>/dev/null | head -1)
-    if [[ -n "$local_last_file" ]]; then
-      local_last_life=$(basename "$local_last_file" .md)
+    status_lives_count=$(find "$LIVES_DIR" -maxdepth 1 -name '*.md' -type f 2>/dev/null | wc -l | tr -d ' ')
+    status_last_file=$(ls -t "$LIVES_DIR"/*.md 2>/dev/null | head -1)
+    if [[ -n "$status_last_file" ]]; then
+      status_last_life=$(basename "$status_last_file" .md)
     fi
   fi
-  echo -e "${CYAN}Lives:${NC}          $local_lives_count"
-  echo -e "${CYAN}Last Life:${NC}      $local_last_life"
+  echo -e "${CYAN}Lives:${NC}          $status_lives_count"
+  echo -e "${CYAN}Last Life:${NC}      $status_last_life"
+
+  # Life counter
+  status_counter=0
+  if [[ -f "$LIFE_COUNTER_FILE" ]]; then
+    status_counter=$(cat "$LIFE_COUNTER_FILE" 2>/dev/null || echo 0)
+  fi
+  echo -e "${CYAN}Life Counter:${NC}   $status_counter"
   echo ""
 
   # Memorial entry count
-  local_memorial_count=0
+  status_memorial_count=0
   if [[ -f "$MEMORIAL_FILE" ]]; then
-    local_memorial_count=$(grep -c '^## Life of' "$MEMORIAL_FILE" 2>/dev/null) || local_memorial_count=0
+    status_memorial_count=$(grep -c '^## Life of' "$MEMORIAL_FILE" 2>/dev/null) || status_memorial_count=0
   fi
-  echo -e "${CYAN}Memorial Entries:${NC}  $local_memorial_count"
+  echo -e "${CYAN}Memorial Entries:${NC}  $status_memorial_count"
 
   # Last memorial entry
-  if [[ -f "$MEMORIAL_FILE" ]] && [[ "$local_memorial_count" -gt 0 ]]; then
+  if [[ -f "$MEMORIAL_FILE" ]] && [[ "$status_memorial_count" -gt 0 ]]; then
     echo ""
     echo -e "${CYAN}Last Memorial Entry:${NC}"
-    # Extract last block starting with "## Life of"
     awk '/^## Life of/{block=""} /^## Life of/{found=1} found{block=block $0 "\n"} END{printf "%s", block}' "$MEMORIAL_FILE" | head -15 | while IFS= read -r line; do
       echo "  $line"
     done
@@ -152,12 +511,12 @@ if $STATUS_MODE; then
 
   # Name index
   echo ""
-  local_name_idx=0
+  status_name_idx=0
   if [[ -f "$NAME_INDEX_FILE" ]]; then
-    local_name_idx=$(cat "$NAME_INDEX_FILE" 2>/dev/null || echo 0)
+    status_name_idx=$(cat "$NAME_INDEX_FILE" 2>/dev/null || echo 0)
   fi
-  local_next_name="${NAMES[$((local_name_idx % 20))]}"
-  echo -e "${CYAN}Next Name:${NC}      $local_next_name (index $local_name_idx)"
+  status_next_name="${NAMES[$((status_name_idx % 20))]}"
+  echo -e "${CYAN}Next Name:${NC}      $status_next_name (index $status_name_idx)"
 
   echo ""
   echo -e "${BOLD}${BLUE}============================================${NC}"
@@ -205,11 +564,15 @@ fi
 # ─── Initialize Directories ─────────────────────────────────────
 mkdir -p "$LOG_DIR"
 mkdir -p "$LIVES_DIR"
-mkdir -p "$(dirname "$NAME_INDEX_FILE")"
 
 # Initialize name index if missing
 if [[ ! -f "$NAME_INDEX_FILE" ]]; then
   echo "0" > "$NAME_INDEX_FILE"
+fi
+
+# Initialize life counter if missing
+if [[ ! -f "$LIFE_COUNTER_FILE" ]]; then
+  echo "0" > "$LIFE_COUNTER_FILE"
 fi
 
 # ─── Concurrent Execution State ──────────────────────────────────
@@ -259,6 +622,8 @@ echo -e " ${BOLD}Immortals — Autonomous Life Cycle Runner${NC}"
 echo -e "${BOLD}${BLUE}============================================${NC}"
 echo ""
 echo "Configuration:"
+echo "  World:      $WORLD_NAME"
+echo "  World dir:  $WORLD_DIR/"
 [[ -n "$HOURS" ]]     && echo "  Hours:      $HOURS (until $(date -r $END_TIME '+%Y-%m-%d %H:%M:%S' 2>/dev/null || date -d @$END_TIME '+%Y-%m-%d %H:%M:%S' 2>/dev/null || echo 'N/A'))"
 [[ -n "$ITERATIONS" ]] && echo "  Iterations: $ITERATIONS"
 echo "  Sleep:      ${SLEEP_MINUTES}m between cycles"
@@ -273,6 +638,7 @@ echo "  System prompt:   $PROMPT_FILE"
 echo "  Destiny:         $DESTINY_FILE"
 echo "  Grand memorial:  $MEMORIAL_FILE"
 echo "  Lives dir:       $LIVES_DIR/"
+echo "  Life counter:    $LIFE_COUNTER_FILE"
 echo ""
 echo -e "${BOLD}${BLUE}============================================${NC}"
 echo ""
@@ -287,10 +653,41 @@ generate_uuid() {
     $RANDOM $RANDOM $RANDOM $RANDOM $RANDOM $RANDOM $RANDOM $RANDOM
 }
 
+# ─── Helper: Persistent life counter ─────────────────────────────
+next_life_number() {
+  local counter_file="$1"
+  local lock_dir="${counter_file}.lock"
+
+  # Atomic lock via mkdir (macOS-safe, same pattern as COMMIT_LOCK)
+  local lock_wait=0
+  while ! mkdir "$lock_dir" 2>/dev/null; do
+    sleep 0.1
+    lock_wait=$((lock_wait + 1))
+    if [[ $lock_wait -ge 100 ]]; then
+      echo "Error: life counter lock timeout" >&2
+      rmdir "$lock_dir" 2>/dev/null || true
+      return 1
+    fi
+  done
+
+  local current
+  current=$(cat "$counter_file" 2>/dev/null || echo 0)
+  if ! [[ "$current" =~ ^[0-9]+$ ]]; then
+    current=0
+  fi
+
+  local next=$((current + 1))
+  echo "$next" > "$counter_file"
+
+  rmdir "$lock_dir" 2>/dev/null || true
+  echo "$next"
+}
+
 # ─── Helper: Copy full session transcript to logs ─────────────────
 copy_transcript() {
   local name="$1"
   local life_uuid="$2"
+  local life_seq="$3"
 
   if [[ -z "$life_uuid" ]]; then
     return 0
@@ -300,10 +697,10 @@ copy_transcript() {
   transcript=$(find "$HOME/.claude/projects" -maxdepth 2 -name "${life_uuid}.jsonl" 2>/dev/null | head -1)
 
   if [[ -n "$transcript" && -f "$transcript" ]]; then
-    cp "$transcript" "$LOG_DIR/${name}-transcript.jsonl"
+    cp "$transcript" "$LOG_DIR/${life_seq}-${name}-transcript.jsonl"
     local size
     size=$(du -h "$transcript" | cut -f1)
-    echo -e "  ${GREEN}Full transcript saved:${NC} $LOG_DIR/${name}-transcript.jsonl (${size})"
+    echo -e "  ${GREEN}Full transcript saved:${NC} $LOG_DIR/${life_seq}-${name}-transcript.jsonl (${size})"
   else
     echo -e "  ${YELLOW}Warning: transcript not found for session ${life_uuid}${NC}"
   fi
@@ -338,6 +735,8 @@ build_prompt() {
   prompt+="# Immortal Life Cycle"
   prompt+=$'\n\n'
   prompt+="**You are ${name}.**"
+  prompt+=$'\n'
+  prompt+="**World**: ${WORLD_NAME}"
   prompt+=$'\n\n'
   prompt+="Write your life's work to: \`${life_file}\`"
   prompt+=$'\n\n'
@@ -492,7 +891,7 @@ auto_commit() {
     local timestamp
     timestamp=$(date '+%Y-%m-%d %H:%M:%S')
 
-    git commit -m "chore(immortals): life of ${name} — ${timestamp}
+    git commit -m "chore(immortals): life of ${name} [${WORLD_NAME}] — ${timestamp}
 
 Automated commit from immortals.sh (session ${SESSION_ID})
 
@@ -526,6 +925,7 @@ run_life_async() {
   local log_file="$3"
   local user_prompt="$4"
   local life_uuid="$5"
+  local life_seq="$6"
 
   # Run Claude with timeout (subshell + watchdog pattern for macOS)
   (echo "$user_prompt" | "${CLAUDE_CMD[@]}" 2>&1 | tee "$log_file") &
@@ -560,7 +960,7 @@ run_life_async() {
   # Post-life processing
   extract_memorial "$name" "$life_file"
   trim_memorial
-  copy_transcript "$name" "$life_uuid"
+  copy_transcript "$name" "$life_uuid" "$life_seq"
 
   # Commit with lock (serialize concurrent commits via mkdir atomicity)
   local lock_wait=0
@@ -604,13 +1004,15 @@ while true; do
     REMAINING=" (${rem_h}h ${rem_m}m remaining)"
   fi
 
-  # ── Pick a name ──
+  # ── Pick a name and get persistent life number ──
   CURRENT_NAME=$(pick_name)
-  LIFE_SEQ=$(printf "%03d" "$CYCLE")
+  LIFE_NUM=$(next_life_number "$LIFE_COUNTER_FILE")
+  LIFE_SEQ=$(printf "%03d" "$LIFE_NUM")
   LIFE_FILE="$LIVES_DIR/${LIFE_SEQ}-${CURRENT_NAME}.md"
 
   echo -e "${BOLD}${BLUE}────────────────────────────────────────────${NC}"
   echo -e " Cycle $CYCLE / $MAX_ITERATIONS | ${TIMESTAMP}${REMAINING}"
+  echo -e " ${CYAN}World: ${BOLD}${WORLD_NAME}${NC} | Life ${BOLD}#${LIFE_NUM}${NC}"
   echo -e " ${CYAN}Life of ${BOLD}${CURRENT_NAME}${NC}"
   echo -e "${BOLD}${BLUE}────────────────────────────────────────────${NC}"
 
@@ -634,7 +1036,7 @@ while true; do
     CLAUDE_CMD+=(--max-budget-usd "$BUDGET")
   fi
 
-  LOG_FILE="$LOG_DIR/${CURRENT_NAME}-$(date '+%Y%m%d-%H%M%S').log"
+  LOG_FILE="$LOG_DIR/${LIFE_SEQ}-${CURRENT_NAME}-$(date '+%Y%m%d-%H%M%S').log"
 
   if $DRY_RUN; then
     echo ""
@@ -646,6 +1048,8 @@ while true; do
     echo "      <prompt with destiny + memorial + recent lives>"
     echo ""
     echo "  Name:        $CURRENT_NAME"
+    echo "  World:       $WORLD_NAME"
+    echo "  Life #:      $LIFE_NUM"
     echo "  Session:     $LIFE_UUID"
     echo "  Life file:   $LIFE_FILE"
     echo "  Prompt size: $(echo "$USER_PROMPT" | wc -c | tr -d ' ') bytes"
@@ -656,7 +1060,7 @@ while true; do
     echo ""
 
     # Run life in background (handles timeout, memorial, commit internally)
-    run_life_async "$CURRENT_NAME" "$LIFE_FILE" "$LOG_FILE" "$USER_PROMPT" "$LIFE_UUID" &
+    run_life_async "$CURRENT_NAME" "$LIFE_FILE" "$LOG_FILE" "$USER_PROMPT" "$LIFE_UUID" "$LIFE_SEQ" &
     LIFE_PIDS+=($!)
   fi
 
@@ -695,12 +1099,13 @@ echo ""
 echo -e "${BOLD}${BLUE}============================================${NC}"
 echo -e " ${BOLD}Immortals Session Complete${NC}"
 echo -e "${BOLD}${BLUE}============================================${NC}"
+echo "  World:       $WORLD_NAME"
 echo "  Lives lived: $CYCLE"
 echo "  Started:     $(date -r $START_TIME '+%Y-%m-%d %H:%M:%S' 2>/dev/null || date -d @$START_TIME '+%Y-%m-%d %H:%M:%S' 2>/dev/null || echo 'N/A')"
 echo "  Ended:       $(date '+%Y-%m-%d %H:%M:%S')"
 echo "  Logs:        $LOG_DIR/"
 if [[ -f "$MEMORIAL_FILE" ]]; then
-  local_entry_count=$(grep -c '^## Life of' "$MEMORIAL_FILE" 2>/dev/null) || local_entry_count=0
-  echo "  Memorial:    $local_entry_count entries in grand-memorial.md"
+  final_entry_count=$(grep -c '^## Life of' "$MEMORIAL_FILE" 2>/dev/null) || final_entry_count=0
+  echo "  Memorial:    $final_entry_count entries in grand-memorial.md"
 fi
 echo -e "${BOLD}${BLUE}============================================${NC}"

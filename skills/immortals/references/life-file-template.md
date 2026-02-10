@@ -1,6 +1,6 @@
 # Life File Template
 
-> Reference for the expected format of individual life files stored in `.immortals/lives/`.
+> Reference for the expected format of individual life files stored in `.immortals/worlds/{world}/lives/`.
 > Each immortal creates one life file per cycle, named `{NNN}-{name}.md`.
 
 ---
@@ -11,6 +11,7 @@
 # Life of {Name}
 
 **Born**: YYYY-MM-DD HH:MM:SS
+**World**: {world-name}
 **Destiny**: {one-line summary from destiny-prompt.md}
 **Died**: (filled at end of life)
 
@@ -55,16 +56,20 @@
 ## Naming Convention
 
 Life files are named: `{NNN}-{name}.md` where:
-- `{NNN}` is a zero-padded 3-digit sequence number (001, 002, ...)
+- `{NNN}` is a zero-padded 3-digit sequence number from the world's persistent `.life-counter`
 - `{name}` is the immortal's name from the name pool
+- The counter is **per-world and monotonic** — it never resets, even across script restarts
+- This prevents file collisions when stopping and restarting the loop
 
-Example: `001-atlas.md`, `002-prometheus.md`, `023-atlas.md` (names cycle)
+Example: `001-atlas.md`, `002-prometheus.md`, `023-atlas.md` (names cycle every 20 lives)
+
+If a world is stopped at life 015 and restarted later, the next life will be 016 — not 001.
 
 ## Section Rules
 
 | Section | When Written | Required |
 |---------|-------------|----------|
-| Header (Born) | Phase 1 — Awaken | Yes |
+| Header (Born, World) | Phase 1 — Awaken | Yes |
 | What I Found | Phase 3 — Explore | Yes |
 | What I Did | Phase 4 — Work | Yes |
 | Header (Died) | Phase 6 — Die | Yes |
