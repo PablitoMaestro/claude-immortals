@@ -60,6 +60,24 @@ Read and display `.immortals/grand-memorial.md`. If long, show last 5 entries wi
 ### Setup
 Check all prerequisites (destiny file, memorial, lives dir, scripts, CLI, log dir). Print readiness checklist with PASS/FAIL per item. Create missing files from plugin bundle, report what was created.
 
+## File Structure
+
+All immortals state lives under `.immortals/` in the repo root:
+
+```
+.immortals/
+  scripts/
+    immortals.sh              # Bash runner (launched in external terminal)
+    immortal-prompt.md        # System prompt injected into each life
+  destiny-prompt.md           # The mission — edit this to set the goal
+  grand-memorial.md           # Accumulated wisdom across all lives
+  .name-index                 # Counter for cycling mythological names
+  lives/                      # Individual life journals (one .md per life)
+  logs/                       # Session logs + full transcripts (gitignored)
+```
+
+**Gitignore recommendation:** Add `.immortals/logs/` to `.gitignore`. Everything else is worth tracking.
+
 ## Rules
 
 1. Self-bootstrapping is silent — detect existing files first, only create what's missing
