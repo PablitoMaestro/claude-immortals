@@ -1,0 +1,9 @@
+{
+  "name": "immortals",
+  "version": "1.0.0",
+  "description": "Autonomous life cycle runner — spawns Claude agents as mythological beings that explore, work, and pass wisdom through a grand memorial across lives.",
+  "author": {
+    "name": "PablitoMaestro"
+  },
+  "keywords": ["autonomous", "agents", "lifecycle", "immortals"]
+}

@@ -1,0 +1,18 @@
+{
+  "name": "claude-immortals",
+  "owner": {
+    "name": "PablitoMaestro"
+  },
+  "metadata": {
+    "description": "Autonomous life cycle runner for Claude Code — spawns agents as mythological beings that explore, work, and pass wisdom across lives."
+  },
+  "plugins": [
+    {
+      "name": "immortals",
+      "source": ".",
+      "description": "Autonomous life cycle runner — mythological agents with destiny, memorial, and concurrent execution.",
+      "version": "1.0.0",
+      "keywords": ["autonomous", "agents", "lifecycle", "immortals", "claude-code"]
+    }
+  ]
+}
