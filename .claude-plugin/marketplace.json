@@ -9,7 +9,7 @@
   "plugins": [
     {
       "name": "immortals",
-      "source": ".",
+      "source": "./",
       "description": "Autonomous life cycle runner — mythological agents with destiny, memorial, and concurrent execution.",
       "version": "1.0.0",
       "keywords": ["autonomous", "agents", "lifecycle", "immortals", "claude-code"]
