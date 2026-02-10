@@ -5,7 +5,7 @@ description: Autonomous life cycle runner. Launch, monitor, set destiny, or run 
 
 # Immortals Skill
 
-Wraps `scripts/immortals.sh` (bash runner) and `scripts/immortals/immortal-prompt.md` (LLM system prompt). Unlike the god-agent's state machine, immortals are self-directed beings that explore, work, and pass wisdom through life files and a grand memorial.
+Wraps `.immortals/scripts/immortals.sh` (bash runner) and `.immortals/scripts/immortal-prompt.md` (LLM system prompt). Unlike the god-agent's state machine, immortals are self-directed beings that explore, work, and pass wisdom through life files and a grand memorial. All files live under `.immortals/` for self-containment.
 
 ## Self-Bootstrapping (all modes)
 
@@ -13,12 +13,13 @@ Before any mode, silently check and create missing files. The plugin bundles ref
 
 **Detection order** (never duplicate existing files):
 
-1. Check `scripts/immortals.sh` — if missing, copy from `$SKILL_ROOT/../../scripts/immortals.sh`
-2. Check `scripts/immortals/immortal-prompt.md` — if missing, create `scripts/immortals/` dir and copy from `$SKILL_ROOT/../../scripts/immortal-prompt.md`
+1. Check `.immortals/scripts/immortals.sh` — if missing, create `.immortals/scripts/` dir and copy from `$SKILL_ROOT/../../scripts/immortals.sh`
+2. Check `.immortals/scripts/immortal-prompt.md` — if missing, copy from `$SKILL_ROOT/../../scripts/immortal-prompt.md`
 3. Check `.immortals/destiny-prompt.md` — if missing, create with empty destiny template
 4. Check `.immortals/grand-memorial.md` — if missing, create with header
 5. Check `.immortals/lives/` — create directory if missing
-6. Ensure `chmod +x scripts/immortals.sh` and `logs/immortals/` exists
+6. Check `.immortals/logs/` — create directory if missing
+7. Ensure `chmod +x .immortals/scripts/immortals.sh`
 
 **Key**: Always check first, never overwrite. If the file exists in the repo, use it — the repo version may have local customizations.
 
@@ -42,10 +43,10 @@ Key flags:
 
 Lives run concurrently — a new life spawns on schedule even if the previous one is still running. Commits are serialized via a lock.
 
-Example: `./scripts/immortals.sh --hours 8 --no-sleep --timeout 60`
+Example: `./.immortals/scripts/immortals.sh --hours 8 --no-sleep --timeout 60`
 
 ### Status
-Run `./scripts/immortals.sh --status` or read state files directly. Present: destiny summary, lives count, last life name, memorial entry count, last memorial wisdom.
+Run `./.immortals/scripts/immortals.sh --status` or read state files directly. Present: destiny summary, lives count, last life name, memorial entry count, last memorial wisdom.
 
 ### Destiny
 Read current `.immortals/destiny-prompt.md`, show it to user, ask what the new destiny should be, then edit the file. The destiny is the singular purpose that guides all immortal lives.

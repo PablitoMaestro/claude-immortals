@@ -5,13 +5,13 @@
 # accumulating wisdom in a grand memorial across lives.
 #
 # Usage:
-#   ./scripts/immortals.sh --hours 8 --sleep 30
-#   ./scripts/immortals.sh --hours 8 --no-sleep          # prevent idle sleep
-#   ./scripts/immortals.sh --hours 8 --timeout 30        # 30min per life
-#   ./scripts/immortals.sh --iterations 3 --sleep 5
-#   ./scripts/immortals.sh --single --budget 5
-#   ./scripts/immortals.sh --status
-#   ./scripts/immortals.sh --hours 24 --dry-run
+#   ./.immortals/scripts/immortals.sh --hours 8 --sleep 30
+#   ./.immortals/scripts/immortals.sh --hours 8 --no-sleep          # prevent idle sleep
+#   ./.immortals/scripts/immortals.sh --hours 8 --timeout 30        # 30min per life
+#   ./.immortals/scripts/immortals.sh --iterations 3 --sleep 5
+#   ./.immortals/scripts/immortals.sh --single --budget 5
+#   ./.immortals/scripts/immortals.sh --status
+#   ./.immortals/scripts/immortals.sh --hours 24 --dry-run
 
 set -o pipefail
 
@@ -41,15 +41,16 @@ NAMES=(atlas prometheus hermes minerva orpheus
        daedalus calliope zephyr artemis helios
        persephone icarus andromeda orion echo)
 
-# ─── Paths (relative to repo root) ──────────────────────────────
+# ─── Paths (relative to .immortals/) ─────────────────────────────
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-PROMPT_FILE="$REPO_ROOT/scripts/immortals/immortal-prompt.md"
-DESTINY_FILE="$REPO_ROOT/.immortals/destiny-prompt.md"
-MEMORIAL_FILE="$REPO_ROOT/.immortals/grand-memorial.md"
-LIVES_DIR="$REPO_ROOT/.immortals/lives"
-LOG_DIR="$REPO_ROOT/logs/immortals"
-NAME_INDEX_FILE="$REPO_ROOT/.immortals/.name-index"
+IMMORTALS_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+REPO_ROOT="$(cd "$IMMORTALS_DIR/.." && pwd)"
+PROMPT_FILE="$SCRIPT_DIR/immortal-prompt.md"
+DESTINY_FILE="$IMMORTALS_DIR/destiny-prompt.md"
+MEMORIAL_FILE="$IMMORTALS_DIR/grand-memorial.md"
+LIVES_DIR="$IMMORTALS_DIR/lives"
+LOG_DIR="$IMMORTALS_DIR/logs"
+NAME_INDEX_FILE="$IMMORTALS_DIR/.name-index"
 
 # ─── Argument Parsing ───────────────────────────────────────────
 while [[ $# -gt 0 ]]; do
@@ -66,7 +67,7 @@ while [[ $# -gt 0 ]]; do
     -h|--help)
       echo "Immortals — Autonomous Life Cycle Runner"
       echo ""
-      echo "Usage: ./scripts/immortals.sh [OPTIONS]"
+      echo "Usage: ./.immortals/scripts/immortals.sh [OPTIONS]"
       echo ""
       echo "Options:"
       echo "  --hours N        Run for N hours (default: 8)"
@@ -84,11 +85,11 @@ while [[ $# -gt 0 ]]; do
       echo "If both provided, stops at whichever comes first."
       echo ""
       echo "Files:"
-      echo "  scripts/immortals/immortal-prompt.md   System prompt for each life"
+      echo "  .immortals/scripts/immortal-prompt.md  System prompt for each life"
       echo "  .immortals/destiny-prompt.md             Destiny/mission for this run"
       echo "  .immortals/grand-memorial.md            Accumulated wisdom across lives"
       echo "  .immortals/lives/                       Individual life logs"
-      echo "  logs/immortals/                         Raw Claude session logs"
+      echo "  .immortals/logs/                        Raw Claude session logs"
       exit 0
       ;;
     *)
@@ -212,7 +213,7 @@ if [[ ! -f "$NAME_INDEX_FILE" ]]; then
 fi
 
 # ─── Concurrent Execution State ──────────────────────────────────
-COMMIT_LOCK="$REPO_ROOT/.immortals/.commit-lock"
+COMMIT_LOCK="$IMMORTALS_DIR/.commit-lock"
 rmdir "$COMMIT_LOCK" 2>/dev/null || true  # Clean up stale lock
 LIFE_PIDS=()
 
@@ -275,6 +276,38 @@ echo "  Lives dir:       $LIVES_DIR/"
 echo ""
 echo -e "${BOLD}${BLUE}============================================${NC}"
 echo ""
+
+# ─── Helper: Generate UUID (cross-platform) ──────────────────────
+generate_uuid() {
+  uuidgen 2>/dev/null | tr '[:upper:]' '[:lower:]' && return
+  python3 -c "import uuid; print(uuid.uuid4())" 2>/dev/null && return
+  cat /proc/sys/kernel/random/uuid 2>/dev/null && return
+  # Last resort: bash pseudo-random hex (not RFC 4122 but unique enough)
+  printf '%04x%04x-%04x-%04x-%04x-%04x%04x%04x\n' \
+    $RANDOM $RANDOM $RANDOM $RANDOM $RANDOM $RANDOM $RANDOM $RANDOM
+}
+
+# ─── Helper: Copy full session transcript to logs ─────────────────
+copy_transcript() {
+  local name="$1"
+  local life_uuid="$2"
+
+  if [[ -z "$life_uuid" ]]; then
+    return 0
+  fi
+
+  local transcript
+  transcript=$(find "$HOME/.claude/projects" -maxdepth 2 -name "${life_uuid}.jsonl" 2>/dev/null | head -1)
+
+  if [[ -n "$transcript" && -f "$transcript" ]]; then
+    cp "$transcript" "$LOG_DIR/${name}-transcript.jsonl"
+    local size
+    size=$(du -h "$transcript" | cut -f1)
+    echo -e "  ${GREEN}Full transcript saved:${NC} $LOG_DIR/${name}-transcript.jsonl (${size})"
+  else
+    echo -e "  ${YELLOW}Warning: transcript not found for session ${life_uuid}${NC}"
+  fi
+}
 
 # ─── Helper: Pick next name from pool ───────────────────────────
 pick_name() {
@@ -492,6 +525,7 @@ run_life_async() {
   local life_file="$2"
   local log_file="$3"
   local user_prompt="$4"
+  local life_uuid="$5"
 
   # Run Claude with timeout (subshell + watchdog pattern for macOS)
   (echo "$user_prompt" | "${CLAUDE_CMD[@]}" 2>&1 | tee "$log_file") &
@@ -526,6 +560,7 @@ run_life_async() {
   # Post-life processing
   extract_memorial "$name" "$life_file"
   trim_memorial
+  copy_transcript "$name" "$life_uuid"
 
   # Commit with lock (serialize concurrent commits via mkdir atomicity)
   local lock_wait=0
@@ -582,12 +617,16 @@ while true; do
   # ── Build prompt ──
   USER_PROMPT=$(build_prompt "$CURRENT_NAME" "$LIFE_FILE")
 
+  # ── Generate session UUID for transcript tracking ──
+  LIFE_UUID=$(generate_uuid)
+
   # ── Build Claude command ──
   CLAUDE_CMD=(
     claude
     -p
     --dangerously-skip-permissions
     --model opus
+    --session-id "$LIFE_UUID"
     --system-prompt "$(cat "$PROMPT_FILE")"
   )
 
@@ -601,11 +640,13 @@ while true; do
     echo ""
     echo "  [DRY RUN] Would execute:"
     echo "    claude -p --dangerously-skip-permissions --model opus \\"
+    echo "      --session-id $LIFE_UUID \\"
     echo "      --system-prompt <immortal-prompt.md> \\"
     [[ -n "$BUDGET" ]] && echo "      --max-budget-usd $BUDGET \\"
     echo "      <prompt with destiny + memorial + recent lives>"
     echo ""
     echo "  Name:        $CURRENT_NAME"
+    echo "  Session:     $LIFE_UUID"
     echo "  Life file:   $LIFE_FILE"
     echo "  Prompt size: $(echo "$USER_PROMPT" | wc -c | tr -d ' ') bytes"
     echo "  Log:         $LOG_FILE"
@@ -615,7 +656,7 @@ while true; do
     echo ""
 
     # Run life in background (handles timeout, memorial, commit internally)
-    run_life_async "$CURRENT_NAME" "$LIFE_FILE" "$LOG_FILE" "$USER_PROMPT" &
+    run_life_async "$CURRENT_NAME" "$LIFE_FILE" "$LOG_FILE" "$USER_PROMPT" "$LIFE_UUID" &
     LIFE_PIDS+=($!)
   fi
 
