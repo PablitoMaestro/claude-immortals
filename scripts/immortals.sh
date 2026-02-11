@@ -9,6 +9,7 @@
 #   ./.immortals/scripts/immortals.sh --continue --hours 8 --no-sleep
 #   ./.immortals/scripts/immortals.sh --world genesis --iterations 3
 #   ./.immortals/scripts/immortals.sh --single --budget 5
+#   ./.immortals/scripts/immortals.sh --agent codex --continue --hours 4
 #   ./.immortals/scripts/immortals.sh --status
 #   ./.immortals/scripts/immortals.sh --hours 24 --dry-run
 
@@ -29,10 +30,12 @@ HOURS=""
 ITERATIONS=""
 SLEEP_MINUTES=30
 BUDGET=""
+AGENT=""
 DRY_RUN=false
 STATUS_MODE=false
 NO_SLEEP=true
 TIMEOUT_MINUTES=60
+HEARTBEAT_MODE=false
 
 # World flags
 NEW_WORLD=""
@@ -66,7 +69,9 @@ while [[ $# -gt 0 ]]; do
     --single)       ITERATIONS=1;         shift   ;;
     --no-sleep)     NO_SLEEP=true;        shift   ;;
     --timeout)      TIMEOUT_MINUTES="$2"; shift 2 ;;
+    --agent)        AGENT="$2";           shift 2 ;;
     --status)       STATUS_MODE=true;     shift   ;;
+    --heartbeat)    HEARTBEAT_MODE=true;  shift   ;;
     --new-world)    NEW_WORLD="$2";       shift 2 ;;
     --inherit-from) INHERIT_FROM="$2";    shift 2 ;;
     --world)        WORLD_FLAG="$2";      shift 2 ;;
@@ -84,15 +89,17 @@ while [[ $# -gt 0 ]]; do
       echo "  (none)                   Auto-continue active world, or error if none"
       echo ""
       echo "Options:"
+      echo "  --agent NAME     Agent engine: 'claude' or 'codex' (default: auto-detect)"
       echo "  --hours N        Run for N hours"
       echo "  --iterations N   Run exactly N cycles"
       echo "  --sleep N        Minutes between cycles (default: 30)"
-      echo "  --budget N       Max USD per cycle (optional)"
+      echo "  --budget N       Max USD per cycle (Claude only, optional)"
       echo "  --timeout N      Max minutes per life before kill (default: 60)"
       echo "  --no-sleep       Prevent macOS idle sleep via caffeinate"
       echo "  --dry-run        Preview without executing"
       echo "  --single         One life only (alias for --iterations 1)"
       echo "  --status         Print summary and exit"
+      echo "  --heartbeat      Show who's alive right now and exit"
       echo "  -h, --help       Show this help"
       echo ""
       echo "Stopping conditions: --hours OR --iterations (at least one required,"
@@ -111,6 +118,9 @@ while [[ $# -gt 0 ]]; do
       echo "  # Switch to specific world"
       echo "  ./immortals.sh --world genesis --iterations 3"
       echo ""
+      echo "  # Use Codex instead of Claude"
+      echo "  ./immortals.sh --agent codex --continue --hours 4"
+      echo ""
       echo "  # Global status (all worlds)"
       echo "  ./immortals.sh --status"
       echo ""
@@ -124,6 +134,31 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+# ─── Agent Selection ──────────────────────────────────────────
+if [[ -z "$AGENT" ]]; then
+  if command -v claude &>/dev/null; then
+    AGENT="claude"
+  elif command -v codex &>/dev/null; then
+    AGENT="codex"
+  else
+    echo "Error: Neither 'claude' nor 'codex' CLI found in PATH."
+    exit 1
+  fi
+fi
+
+case "$AGENT" in
+  claude|codex) ;;
+  *)
+    echo "Unknown agent: $AGENT. Use 'claude' or 'codex'."
+    exit 1
+    ;;
+esac
+
+# Set prompt file based on agent
+if [[ "$AGENT" == "codex" ]]; then
+  PROMPT_FILE="$SCRIPT_DIR/immortal-prompt-codex.md"
+fi
 
 # ─── Validate World Flag Combinations ──────────────────────────
 world_flag_count=0
@@ -406,6 +441,109 @@ if [[ -n "$WORLD_NAME" ]]; then
   LOG_DIR="$WORLD_DIR/logs"
   NAME_INDEX_FILE="$WORLD_DIR/.name-index"
   LIFE_COUNTER_FILE="$WORLD_DIR/.life-counter"
+  HEARTBEAT_FILE="$WORLD_DIR/.heartbeat"
+fi
+
+# ─── Heartbeat: Track living immortals ────────────────────────────
+# Format per line: name|pid|timestamp|agent
+heartbeat_add() {
+  local name="$1" pid="$2"
+  local ts
+  ts=$(date '+%Y-%m-%d %H:%M:%S')
+  echo "${name}|${pid}|${ts}|${AGENT}" >> "$HEARTBEAT_FILE"
+}
+
+heartbeat_remove() {
+  local name="$1"
+  if [[ -f "$HEARTBEAT_FILE" ]]; then
+    local tmp="${HEARTBEAT_FILE}.tmp"
+    grep -v "^${name}|" "$HEARTBEAT_FILE" > "$tmp" 2>/dev/null || true
+    mv "$tmp" "$HEARTBEAT_FILE"
+    # Remove file if empty
+    [[ ! -s "$HEARTBEAT_FILE" ]] && rm -f "$HEARTBEAT_FILE"
+  fi
+}
+
+heartbeat_prune() {
+  # Remove entries whose PIDs are no longer running
+  [[ -f "$HEARTBEAT_FILE" ]] || return 0
+  local tmp="${HEARTBEAT_FILE}.tmp"
+  while IFS='|' read -r name pid ts agent; do
+    if kill -0 "$pid" 2>/dev/null; then
+      echo "${name}|${pid}|${ts}|${agent}"
+    fi
+  done < "$HEARTBEAT_FILE" > "$tmp"
+  mv "$tmp" "$HEARTBEAT_FILE"
+  [[ ! -s "$HEARTBEAT_FILE" ]] && rm -f "$HEARTBEAT_FILE"
+}
+
+heartbeat_show() {
+  heartbeat_prune
+  if [[ ! -f "$HEARTBEAT_FILE" ]] || [[ ! -s "$HEARTBEAT_FILE" ]]; then
+    echo -e "${CYAN}Alive:${NC}          (none)"
+    return
+  fi
+  local count
+  count=$(wc -l < "$HEARTBEAT_FILE" | tr -d ' ')
+  echo -e "${CYAN}Alive:${NC}          ${count} immortal(s)"
+  while IFS='|' read -r name pid ts agent; do
+    local now_s
+    now_s=$(date +%s)
+    local born_s
+    born_s=$(date -j -f '%Y-%m-%d %H:%M:%S' "$ts" +%s 2>/dev/null || date -d "$ts" +%s 2>/dev/null || echo "$now_s")
+    local elapsed=$(( now_s - born_s ))
+    local mins=$(( elapsed / 60 ))
+    echo -e "                  ${BOLD}${name}${NC}  (${agent})  alive ${mins}m  PID ${pid}"
+  done < "$HEARTBEAT_FILE"
+}
+
+# ─── Heartbeat Mode ─────────────────────────────────────────────
+if $HEARTBEAT_MODE; then
+  if [[ -z "$WORLD_NAME" ]]; then
+    # Show heartbeat for all worlds
+    echo ""
+    echo -e "${BOLD}${BLUE}============================================${NC}"
+    echo -e " ${BOLD}Heartbeat — All Worlds${NC}"
+    echo -e "${BOLD}${BLUE}============================================${NC}"
+    found_any=false
+    for world_dir in "$WORLDS_DIR"/*/; do
+      [[ -d "$world_dir" ]] || continue
+      local_hb="${world_dir}.heartbeat"
+      [[ -f "$local_hb" ]] || continue
+      local_world=$(basename "$world_dir")
+      # Prune stale entries inline
+      local_tmp="${local_hb}.tmp"
+      while IFS='|' read -r name pid ts agent; do
+        kill -0 "$pid" 2>/dev/null && echo "${name}|${pid}|${ts}|${agent}"
+      done < "$local_hb" > "$local_tmp"
+      mv "$local_tmp" "$local_hb"
+      [[ ! -s "$local_hb" ]] && { rm -f "$local_hb"; continue; }
+      found_any=true
+      local_count=$(wc -l < "$local_hb" | tr -d ' ')
+      echo ""
+      echo -e "  ${BOLD}${local_world}${NC} — ${local_count} alive"
+      while IFS='|' read -r name pid ts agent; do
+        echo -e "    ${name}  (${agent})  PID ${pid}  since ${ts}"
+      done < "$local_hb"
+    done
+    if ! $found_any; then
+      echo ""
+      echo -e "  ${DIM}No immortals are currently alive.${NC}"
+    fi
+    echo ""
+    echo -e "${BOLD}${BLUE}============================================${NC}"
+  else
+    # Show heartbeat for specific world
+    echo ""
+    echo -e "${BOLD}${BLUE}============================================${NC}"
+    echo -e " ${BOLD}Heartbeat — ${WORLD_NAME}${NC}"
+    echo -e "${BOLD}${BLUE}============================================${NC}"
+    echo ""
+    heartbeat_show
+    echo ""
+    echo -e "${BOLD}${BLUE}============================================${NC}"
+  fi
+  exit 0
 fi
 
 # ─── Status Mode ────────────────────────────────────────────────
@@ -518,6 +656,10 @@ if $STATUS_MODE; then
   status_next_name="${NAMES[$((status_name_idx % 20))]}"
   echo -e "${CYAN}Next Name:${NC}      $status_next_name (index $status_name_idx)"
 
+  # Heartbeat: who's alive right now
+  echo ""
+  heartbeat_show
+
   echo ""
   echo -e "${BOLD}${BLUE}============================================${NC}"
   exit 0
@@ -543,8 +685,8 @@ if [[ ! -f "$DESTINY_FILE" ]]; then
   exit 1
 fi
 
-if ! command -v claude &>/dev/null; then
-  echo "Error: 'claude' CLI not found in PATH"
+if ! command -v "$AGENT" &>/dev/null; then
+  echo "Error: '$AGENT' CLI not found in PATH"
   exit 1
 fi
 
@@ -578,6 +720,7 @@ fi
 # ─── Concurrent Execution State ──────────────────────────────────
 COMMIT_LOCK="$IMMORTALS_DIR/.commit-lock"
 rmdir "$COMMIT_LOCK" 2>/dev/null || true  # Clean up stale lock
+heartbeat_prune  # Remove stale entries from crashed sessions
 LIFE_PIDS=()
 
 # ─── Cleanup Trap ────────────────────────────────────────────────
@@ -586,6 +729,7 @@ cleanup_immortals() {
     kill "$pid" 2>/dev/null
   done
   rmdir "$COMMIT_LOCK" 2>/dev/null || true
+  rm -f "$HEARTBEAT_FILE" 2>/dev/null || true  # All lives end when runner exits
 }
 trap cleanup_immortals EXIT
 
@@ -616,12 +760,20 @@ MAX_ITERATIONS=${ITERATIONS:-999999}  # effectively infinite if not set
 SLEEP_SECS=$((SLEEP_MINUTES * 60))
 TIMEOUT_SECS=$((TIMEOUT_MINUTES * 60))
 
+# Dry-run: cap at 1 cycle (preview only) and preserve counters
+if $DRY_RUN; then
+  [[ -z "$ITERATIONS" ]] && MAX_ITERATIONS=1
+  _DRY_COUNTER=$(cat "$LIFE_COUNTER_FILE" 2>/dev/null)
+  _DRY_NAME_IDX=$(cat "$NAME_INDEX_FILE" 2>/dev/null)
+fi
+
 # ─── Print Configuration ────────────────────────────────────────
 echo -e "${BOLD}${BLUE}============================================${NC}"
 echo -e " ${BOLD}Immortals — Autonomous Life Cycle Runner${NC}"
 echo -e "${BOLD}${BLUE}============================================${NC}"
 echo ""
 echo "Configuration:"
+echo "  Agent:      $AGENT"
 echo "  World:      $WORLD_NAME"
 echo "  World dir:  $WORLD_DIR/"
 [[ -n "$HOURS" ]]     && echo "  Hours:      $HOURS (until $(date -r $END_TIME '+%Y-%m-%d %H:%M:%S' 2>/dev/null || date -d @$END_TIME '+%Y-%m-%d %H:%M:%S' 2>/dev/null || echo 'N/A'))"
@@ -689,7 +841,8 @@ copy_transcript() {
   local life_uuid="$2"
   local life_seq="$3"
 
-  if [[ -z "$life_uuid" ]]; then
+  # Only Claude stores session transcripts as .jsonl files
+  if [[ "$AGENT" != "claude" || -z "$life_uuid" ]]; then
     return 0
   fi
 
@@ -738,77 +891,34 @@ build_prompt() {
   prompt+=$'\n'
   prompt+="**World**: ${WORLD_NAME}"
   prompt+=$'\n\n'
-  prompt+="Write your life's work to: \`${life_file}\`"
-  prompt+=$'\n\n'
 
-  # Destiny
-  prompt+="## Destiny (Your Mission)"
+  # Paths — the system prompt tells the agent when to read each file
+  prompt+="## Paths"
   prompt+=$'\n\n'
-  prompt+='```markdown'
+  prompt+="- **Life file** (create here): \`${life_file}\`"
   prompt+=$'\n'
-  prompt+="$(cat "$DESTINY_FILE")"
+  prompt+="- **Destiny**: \`${DESTINY_FILE}\`"
   prompt+=$'\n'
-  prompt+='```'
-  prompt+=$'\n\n'
+  prompt+="- **Grand Memorial**: \`${MEMORIAL_FILE}\`"
+  prompt+=$'\n'
 
-  # Grand memorial (accumulated wisdom)
-  if [[ -f "$MEMORIAL_FILE" ]]; then
-    prompt+="## Grand Memorial (Wisdom from Past Lives)"
-    prompt+=$'\n\n'
-    prompt+='```markdown'
-    prompt+=$'\n'
-    prompt+="$(cat "$MEMORIAL_FILE")"
-    prompt+=$'\n'
-    prompt+='```'
-    prompt+=$'\n\n'
-  fi
-
-  # Recent lives (last 3)
-  prompt+="## Recent Lives (for context)"
-  prompt+=$'\n\n'
+  # Recent lives (just paths, agent reads them in Phase 2)
   local recent_files
   recent_files=$(ls -t "$LIVES_DIR"/*.md 2>/dev/null | head -3)
   if [[ -n "$recent_files" ]]; then
-    local file
+    prompt+="- **Recent lives**:"
+    prompt+=$'\n'
     while IFS= read -r file; do
-      local basename_file
-      basename_file=$(basename "$file")
-      prompt+="### ${basename_file}"
-      prompt+=$'\n\n'
-      prompt+='```markdown'
+      prompt+="  - \`${file}\`"
       prompt+=$'\n'
-      # Limit each life file to 200 lines to avoid prompt bloat
-      prompt+="$(head -200 "$file")"
-      prompt+=$'\n'
-      prompt+='```'
-      prompt+=$'\n\n'
     done <<< "$recent_files"
   else
-    prompt+="(No previous lives yet. You are the first.)"
-    prompt+=$'\n\n'
+    prompt+="- **Recent lives**: (none — you are the first)"
+    prompt+=$'\n'
   fi
 
-  prompt+="## Instructions"
-  prompt+=$'\n\n'
-  prompt+="1. Study the destiny and memorial above."
   prompt+=$'\n'
-  prompt+="2. Do your life's work as ${name} — advance the destiny."
-  prompt+=$'\n'
-  prompt+="3. Write your life log to \`${life_file}\`."
-  prompt+=$'\n'
-  prompt+="4. At the end of your life file, include a memorial section wrapped in tags:"
-  prompt+=$'\n'
-  prompt+='```'
-  prompt+=$'\n'
-  prompt+='<memorial>'
-  prompt+=$'\n'
-  prompt+='Your key insights, lessons learned, and advice for future lives.'
-  prompt+=$'\n'
-  prompt+='</memorial>'
-  prompt+=$'\n'
-  prompt+='```'
-  prompt+=$'\n'
-  prompt+="5. This memorial will be extracted and added to the Grand Memorial for future lives."
+  prompt+="Now begin. Follow the six phases in your system prompt."
   prompt+=$'\n'
 
   echo "$prompt"
@@ -927,11 +1037,20 @@ run_life_async() {
   local life_uuid="$5"
   local life_seq="$6"
 
-  # Run Claude with timeout (subshell + watchdog pattern for macOS)
-  (echo "$user_prompt" | "${CLAUDE_CMD[@]}" 2>&1 | tee "$log_file") &
+  # Run agent with timeout (subshell + watchdog pattern for macOS)
+  # Agent output goes to log file only — read life files for results
+  if [[ "$AGENT" == "codex" ]]; then
+    # Codex: prepend system prompt to stdin (no --system-prompt flag)
+    ({ cat "$PROMPT_FILE"; echo -e "\n\n---\n\n"; echo "$user_prompt"; } | "${AGENT_CMD[@]}" > "$log_file" 2>&1) &
+  else
+    (echo "$user_prompt" | "${AGENT_CMD[@]}" > "$log_file" 2>&1) &
+  fi
   local claude_pid=$!
 
-  # Watchdog: kill Claude if it exceeds timeout
+  # Register in heartbeat (alive tracker)
+  heartbeat_add "${life_seq}-${name}" "$claude_pid"
+
+  # Watchdog: kill agent if it exceeds timeout
   (
     sleep "$TIMEOUT_SECS"
     kill -TERM "$claude_pid" 2>/dev/null
@@ -940,7 +1059,7 @@ run_life_async() {
   ) &
   local watchdog_pid=$!
 
-  # Wait for Claude to finish (or be killed)
+  # Wait for agent to finish (or be killed)
   wait "$claude_pid" 2>/dev/null
   local exit_code=$?
 
@@ -956,6 +1075,9 @@ run_life_async() {
   else
     echo -e "  ${GREEN}Life of ${name} completed successfully.${NC}"
   fi
+
+  # Remove from heartbeat (life ended)
+  heartbeat_remove "${life_seq}-${name}"
 
   # Post-life processing
   extract_memorial "$name" "$life_file"
@@ -1022,31 +1144,45 @@ while true; do
   # ── Generate session UUID for transcript tracking ──
   LIFE_UUID=$(generate_uuid)
 
-  # ── Build Claude command ──
-  CLAUDE_CMD=(
-    claude
-    -p
-    --dangerously-skip-permissions
-    --model opus
-    --session-id "$LIFE_UUID"
-    --system-prompt "$(cat "$PROMPT_FILE")"
-  )
-
-  if [[ -n "$BUDGET" ]]; then
-    CLAUDE_CMD+=(--max-budget-usd "$BUDGET")
-  fi
+  # ── Build agent command ──
+  case "$AGENT" in
+    claude)
+      AGENT_CMD=(
+        claude
+        -p
+        --dangerously-skip-permissions
+        --model opus
+        --session-id "$LIFE_UUID"
+        --system-prompt "$(cat "$PROMPT_FILE")"
+      )
+      [[ -n "$BUDGET" ]] && AGENT_CMD+=(--max-budget-usd "$BUDGET")
+      ;;
+    codex)
+      AGENT_CMD=(
+        codex exec -
+        --full-auto
+        --model gpt-5.3-codex
+      )
+      ;;
+  esac
 
   LOG_FILE="$LOG_DIR/${LIFE_SEQ}-${CURRENT_NAME}-$(date '+%Y%m%d-%H%M%S').log"
 
   if $DRY_RUN; then
     echo ""
     echo "  [DRY RUN] Would execute:"
-    echo "    claude -p --dangerously-skip-permissions --model opus \\"
-    echo "      --session-id $LIFE_UUID \\"
-    echo "      --system-prompt <immortal-prompt.md> \\"
-    [[ -n "$BUDGET" ]] && echo "      --max-budget-usd $BUDGET \\"
-    echo "      <prompt with destiny + memorial + recent lives>"
+    if [[ "$AGENT" == "claude" ]]; then
+      echo "    claude -p --dangerously-skip-permissions --model opus \\"
+      echo "      --session-id $LIFE_UUID \\"
+      echo "      --system-prompt <immortal-prompt.md> \\"
+      [[ -n "$BUDGET" ]] && echo "      --max-budget-usd $BUDGET \\"
+      echo "      <prompt with destiny + memorial + recent lives>"
+    else
+      echo "    codex exec - --full-auto --model gpt-5.3-codex \\"
+      echo "      <system-prompt + prompt with destiny + memorial + recent lives>"
+    fi
     echo ""
+    echo "  Agent:       $AGENT"
     echo "  Name:        $CURRENT_NAME"
     echo "  World:       $WORLD_NAME"
     echo "  Life #:      $LIFE_NUM"
@@ -1084,6 +1220,12 @@ while true; do
     sleep "$SLEEP_SECS"
   fi
 done
+
+# ─── Restore Counters After Dry Run ──────────────────────────────
+if $DRY_RUN && [[ -n "$_DRY_COUNTER" ]]; then
+  echo "$_DRY_COUNTER" > "$LIFE_COUNTER_FILE"
+  echo "$_DRY_NAME_IDX" > "$NAME_INDEX_FILE"
+fi
 
 # ─── Wait for Remaining Lives ────────────────────────────────────
 if [[ ${#LIFE_PIDS[@]} -gt 0 ]]; then

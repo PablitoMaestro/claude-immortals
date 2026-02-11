@@ -15,9 +15,10 @@ Before any mode, silently check and create missing files. The plugin bundles ref
 
 1. Check `.immortals/scripts/immortals.sh` — if missing, create `.immortals/scripts/` dir and copy from `$SKILL_ROOT/../../scripts/immortals.sh`
 2. Check `.immortals/scripts/immortal-prompt.md` — if missing, copy from `$SKILL_ROOT/../../scripts/immortal-prompt.md`
-3. Check `.immortals/worlds/` directory — if missing but `.immortals/lives/` exists, the bash script will auto-migrate to `worlds/legacy/` on first run
-4. If no worlds exist and user wants to launch, prompt for a world name or suggest `--new-world genesis`
-5. Ensure `chmod +x .immortals/scripts/immortals.sh`
+3. Check `.immortals/scripts/immortal-prompt-codex.md` — if missing, copy from `$SKILL_ROOT/../../scripts/immortal-prompt-codex.md`
+4. Check `.immortals/worlds/` directory — if missing but `.immortals/lives/` exists, the bash script will auto-migrate to `worlds/legacy/` on first run
+5. If no worlds exist and user wants to launch, prompt for a world name or suggest `--new-world genesis`
+6. Ensure `chmod +x .immortals/scripts/immortals.sh`
 
 **Key**: Always check first, never overwrite. If the file exists in the repo, use it — the repo version may have local customizations.
 
@@ -26,6 +27,7 @@ Before any mode, silently check and create missing files. The plugin bundles ref
 | Trigger | Mode |
 |---------|------|
 | "launch/start immortals" | **Launch** |
+| "codex immortals", "use codex for immortals" | **Launch** (with `--agent codex`) |
 | "immortal status" | **Status** |
 | "set/change destiny" | **Destiny** |
 | "single life", "run one life" | **Single** |
@@ -36,9 +38,10 @@ Before any mode, silently check and create missing files. The plugin bundles ref
 | "list worlds" | **Worlds List** |
 
 ### Launch
-Present flag options including world flags (`--new-world`, `--world`, `--continue`, `--inherit-from`) and run options (`--hours`, `--iterations`, `--sleep`, `--budget`, `--timeout`, `--no-sleep`, `--dry-run`, `--single`). Print the configured command. Warn: runs in external terminal, not inside Claude Code.
+Present flag options including world flags (`--new-world`, `--world`, `--continue`, `--inherit-from`), agent selection (`--agent`), and run options (`--hours`, `--iterations`, `--sleep`, `--budget`, `--timeout`, `--no-sleep`, `--dry-run`, `--single`). Print the configured command. Warn: runs in external terminal, not inside Claude Code.
 
 Key flags:
+- `--agent NAME` — Agent engine: `claude` or `codex`. Default: auto-detect (prefers claude if both available).
 - `--new-world NAME` — Create a new world and set as active. Required for first-time use.
 - `--world NAME` — Resume a specific existing world.
 - `--continue` — Resume the active world (from `.active` pointer).
@@ -50,6 +53,7 @@ Lives run concurrently — a new life spawns on schedule even if the previous on
 
 Example: `./.immortals/scripts/immortals.sh --new-world genesis --hours 8 --no-sleep --timeout 60`
 Example: `./.immortals/scripts/immortals.sh --continue --hours 4`
+Example: `./.immortals/scripts/immortals.sh --agent codex --continue --hours 4`
 
 ### Status
 Run `./.immortals/scripts/immortals.sh --status` for global summary (all worlds with life counts and active marker), or `./.immortals/scripts/immortals.sh --world NAME --status` for per-world detail. Present: world name, destiny summary, lives count, life counter, last life name, memorial entry count, last memorial wisdom.
@@ -83,7 +87,8 @@ All immortals state lives under `.immortals/` in the repo root:
 .immortals/
   scripts/
     immortals.sh              # Bash runner (launched in external terminal)
-    immortal-prompt.md        # System prompt injected into each life
+    immortal-prompt.md        # System prompt for Claude lives
+    immortal-prompt-codex.md  # System prompt for Codex lives
   worlds-log.md               # Global log: when each world was created
   .active                     # Single line: name of active world
   worlds/
