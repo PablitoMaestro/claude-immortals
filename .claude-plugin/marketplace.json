@@ -10,9 +10,9 @@
     {
       "name": "immortals",
       "source": "./",
-      "description": "Autonomous life cycle runner — mythological agents with destiny, memorial, and concurrent execution.",
-      "version": "1.0.0",
-      "keywords": ["autonomous", "agents", "lifecycle", "immortals", "claude-code"]
+      "description": "Autonomous life cycle runner with multi-world orchestration, hot-reloadable config, and oversight agent.",
+      "version": "3.0.0",
+      "keywords": ["autonomous", "agents", "lifecycle", "immortals", "claude-code", "orchestrator"]
     }
   ]
 }

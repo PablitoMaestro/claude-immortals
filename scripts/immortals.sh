@@ -37,6 +37,17 @@ NO_SLEEP=true
 TIMEOUT_MINUTES=60
 HEARTBEAT_MODE=false
 
+# Configurable defaults (overridden by config.sh, then CLI flags)
+CONFIG_POLL_SECONDS=60
+CLAUDE_MODEL="claude-opus-4-6"
+CODEX_MODEL="gpt-5.3-codex"
+PUSH_MAX_RETRIES=2
+MEMORIAL_MAX_LINES=500
+MEMORIAL_HEADER_LINES=5
+COMMIT_LOCK_TIMEOUT=120
+COUNTER_LOCK_WAIT=100
+ENABLED=true
+
 # World flags
 NEW_WORLD=""
 INHERIT_FROM=""
@@ -58,18 +69,22 @@ ACTIVE_FILE="$IMMORTALS_DIR/.active"
 WORLDS_DIR="$IMMORTALS_DIR/worlds"
 WORLDS_LOG="$IMMORTALS_DIR/worlds-log.md"
 
+# ─── Load Global Config ────────────────────────────────────────
+GLOBAL_CONFIG="$IMMORTALS_DIR/config.sh"
+[[ -f "$GLOBAL_CONFIG" ]] && source "$GLOBAL_CONFIG"
+
 # ─── Argument Parsing ───────────────────────────────────────────
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --hours)        HOURS="$2";           shift 2 ;;
     --iterations)   ITERATIONS="$2";      shift 2 ;;
-    --sleep)        SLEEP_MINUTES="$2";   shift 2 ;;
-    --budget)       BUDGET="$2";          shift 2 ;;
+    --sleep)        SLEEP_MINUTES="$2"; _CLI_SLEEP_MINUTES="$2";     shift 2 ;;
+    --budget)       BUDGET="$2";        _CLI_BUDGET="$2";             shift 2 ;;
     --dry-run)      DRY_RUN=true;         shift   ;;
     --single)       ITERATIONS=1;         shift   ;;
-    --no-sleep)     NO_SLEEP=true;        shift   ;;
-    --timeout)      TIMEOUT_MINUTES="$2"; shift 2 ;;
-    --agent)        AGENT="$2";           shift 2 ;;
+    --no-sleep)     NO_SLEEP=true;      _CLI_NO_SLEEP=true;           shift   ;;
+    --timeout)      TIMEOUT_MINUTES="$2"; _CLI_TIMEOUT_MINUTES="$2"; shift 2 ;;
+    --agent)        AGENT="$2";         _CLI_AGENT="$2";              shift 2 ;;
     --status)       STATUS_MODE=true;     shift   ;;
     --heartbeat)    HEARTBEAT_MODE=true;  shift   ;;
     --new-world)    NEW_WORLD="$2";       shift 2 ;;
@@ -329,6 +344,18 @@ MEMORIAL_EOF
 MEMORIAL_EOF
   fi
 
+  # Create per-world config template
+  cat > "$new_world_dir/config.sh" << 'WCONFIG_EOF'
+# Per-world config overrides for this world.
+# These take priority over global config.sh values.
+# Uncomment and set only what you want to override.
+
+# SLEEP_MINUTES=30
+# TIMEOUT_MINUTES=60
+# BUDGET=""
+# ENABLED=true
+WCONFIG_EOF
+
   # Create empty destiny template
   cat > "$new_world_dir/destiny-prompt.md" << 'DESTINY_EOF'
 # Destiny
@@ -442,6 +469,57 @@ if [[ -n "$WORLD_NAME" ]]; then
   NAME_INDEX_FILE="$WORLD_DIR/.name-index"
   LIFE_COUNTER_FILE="$WORLD_DIR/.life-counter"
   HEARTBEAT_FILE="$WORLD_DIR/.heartbeat"
+fi
+
+# ─── Config Reload ─────────────────────────────────────────────
+# List of variables that support WORLD_<name>_ overrides
+CONFIG_VARS=(SLEEP_MINUTES TIMEOUT_MINUTES AGENT BUDGET NO_SLEEP ENABLED
+             CLAUDE_MODEL CODEX_MODEL MEMORIAL_MAX_LINES MEMORIAL_HEADER_LINES
+             PUSH_MAX_RETRIES CONFIG_POLL_SECONDS)
+
+apply_world_overrides() {
+  # Apply WORLD_<name>_<VAR> overrides from global config
+  # Convert hyphens to underscores (bash vars can't contain hyphens)
+  local safe_name="${WORLD_NAME//-/_}"
+  for var in "${CONFIG_VARS[@]}"; do
+    local world_var="WORLD_${safe_name}_${var}"
+    if [[ -n "${!world_var+x}" ]]; then
+      eval "$var=\"${!world_var}\""
+    fi
+  done
+}
+
+reload_config() {
+  local prev_sleep=$SLEEP_MINUTES prev_timeout=$TIMEOUT_MINUTES
+  local prev_budget=$BUDGET prev_enabled=$ENABLED
+
+  # Re-source: global -> per-world sections -> world file
+  [[ -f "$GLOBAL_CONFIG" ]] && source "$GLOBAL_CONFIG"
+  [[ -n "$WORLD_NAME" ]] && apply_world_overrides
+  [[ -n "$WORLD_NAME" && -f "$WORLD_CONFIG" ]] && source "$WORLD_CONFIG"
+
+  # CLI flags always win
+  [[ -n "${_CLI_SLEEP_MINUTES+x}" ]]   && SLEEP_MINUTES="$_CLI_SLEEP_MINUTES"
+  [[ -n "${_CLI_BUDGET+x}" ]]          && BUDGET="$_CLI_BUDGET"
+  [[ -n "${_CLI_AGENT+x}" ]]           && AGENT="$_CLI_AGENT"
+  [[ -n "${_CLI_NO_SLEEP+x}" ]]        && NO_SLEEP="$_CLI_NO_SLEEP"
+  [[ -n "${_CLI_TIMEOUT_MINUTES+x}" ]] && TIMEOUT_MINUTES="$_CLI_TIMEOUT_MINUTES"
+
+  # Recalculate derived values
+  SLEEP_SECS=$((SLEEP_MINUTES * 60))
+  TIMEOUT_SECS=$((TIMEOUT_MINUTES * 60))
+
+  # Log changes
+  [[ "$prev_sleep" != "$SLEEP_MINUTES" ]]     && echo -e "  ${CYAN}Config: SLEEP_MINUTES ${prev_sleep} -> ${SLEEP_MINUTES}${NC}"
+  [[ "$prev_timeout" != "$TIMEOUT_MINUTES" ]] && echo -e "  ${CYAN}Config: TIMEOUT_MINUTES ${prev_timeout} -> ${TIMEOUT_MINUTES}${NC}"
+  [[ "$prev_budget" != "$BUDGET" ]]           && echo -e "  ${CYAN}Config: BUDGET ${prev_budget:-none} -> ${BUDGET:-none}${NC}"
+  [[ "$prev_enabled" != "$ENABLED" ]]         && echo -e "  ${CYAN}Config: ENABLED ${prev_enabled} -> ${ENABLED}${NC}"
+}
+
+# Initial world config load
+if [[ -n "$WORLD_NAME" ]]; then
+  WORLD_CONFIG="$WORLD_DIR/config.sh"
+  reload_config
 fi
 
 # ─── Heartbeat: Track living immortals ────────────────────────────
@@ -730,8 +808,15 @@ cleanup_immortals() {
   done
   rmdir "$COMMIT_LOCK" 2>/dev/null || true
   rm -f "$HEARTBEAT_FILE" 2>/dev/null || true  # All lives end when runner exits
+  [[ -n "$RUNNER_PID_FILE" ]] && rm -f "$RUNNER_PID_FILE" 2>/dev/null
 }
 trap cleanup_immortals EXIT
+
+# Write runner PID for hand-of-god.sh process management
+if [[ -n "$WORLD_NAME" ]]; then
+  RUNNER_PID_FILE="$WORLD_DIR/.runner-pid"
+  echo "$$" > "$RUNNER_PID_FILE"
+fi
 
 # Initialize grand memorial if missing
 if [[ ! -f "$MEMORIAL_FILE" ]]; then
@@ -784,6 +869,15 @@ echo "  Timeout:    ${TIMEOUT_MINUTES}m per life"
 $NO_SLEEP             && echo "  No-sleep:   caffeinate active"
 $DRY_RUN              && echo "  Mode:       DRY RUN (no execution)"
 echo "  Logs:       $LOG_DIR/"
+echo "  Model:      $CLAUDE_MODEL (claude) / $CODEX_MODEL (codex)"
+echo "  Config poll: ${CONFIG_POLL_SECONDS}s"
+echo ""
+echo "Config files (precedence: last wins):"
+[[ -f "$GLOBAL_CONFIG" ]] && echo "  Global:          $GLOBAL_CONFIG (loaded)" || echo "  Global:          (none)"
+if [[ -n "$WORLD_NAME" ]]; then
+  echo "  Per-world inline: WORLD_${WORLD_NAME}_* in config.sh"
+  [[ -n "$WORLD_CONFIG" && -f "$WORLD_CONFIG" ]] && echo "  World config:    $WORLD_CONFIG (loaded)" || echo "  World config:    (none)"
+fi
 echo ""
 echo "State files:"
 echo "  System prompt:   $PROMPT_FILE"
@@ -815,7 +909,7 @@ next_life_number() {
   while ! mkdir "$lock_dir" 2>/dev/null; do
     sleep 0.1
     lock_wait=$((lock_wait + 1))
-    if [[ $lock_wait -ge 100 ]]; then
+    if [[ $lock_wait -ge ${COUNTER_LOCK_WAIT:-100} ]]; then
       echo "Error: life counter lock timeout" >&2
       rmdir "$lock_dir" 2>/dev/null || true
       return 1
@@ -962,8 +1056,8 @@ extract_memorial() {
 
 # ─── Helper: Trim memorial to prevent bloat ──────────────────────
 trim_memorial() {
-  local max_lines=500
-  local header_lines=5
+  local max_lines="${MEMORIAL_MAX_LINES:-500}"
+  local header_lines="${MEMORIAL_HEADER_LINES:-5}"
   local keep_lines=$((max_lines - header_lines))
 
   if [[ ! -f "$MEMORIAL_FILE" ]]; then
@@ -989,7 +1083,7 @@ trim_memorial() {
 # ─── Helper: Auto-commit if changes exist ────────────────────────
 auto_commit() {
   local name="$1"
-  local max_retries=2
+  local max_retries="${PUSH_MAX_RETRIES:-2}"
 
   cd "$REPO_ROOT"
 
@@ -1065,7 +1159,7 @@ run_life_async() {
 
   # Clean up watchdog
   kill "$watchdog_pid" 2>/dev/null
-  wait "$watchdog_pid" 2>/dev/null 2>&1
+  wait "$watchdog_pid" 2>/dev/null
 
   echo ""
   if [[ $exit_code -eq 143 || $exit_code -eq 137 ]]; then
@@ -1089,13 +1183,33 @@ run_life_async() {
   while ! mkdir "$COMMIT_LOCK" 2>/dev/null; do
     sleep 2
     lock_wait=$((lock_wait + 2))
-    if [[ $lock_wait -ge 120 ]]; then
+    if [[ $lock_wait -ge ${COMMIT_LOCK_TIMEOUT:-120} ]]; then
       echo -e "  ${RED}Warning: commit lock timeout for ${name} — skipping commit${NC}"
       return 1
     fi
   done
   auto_commit "$name"
   rmdir "$COMMIT_LOCK" 2>/dev/null || true
+}
+
+# ─── Poll Sleep (config-aware) ─────────────────────────────────
+poll_sleep() {
+  local total_secs=$((SLEEP_MINUTES * 60))
+  local poll=${CONFIG_POLL_SECONDS:-60}
+  local elapsed=0
+
+  while [[ $elapsed -lt $total_secs ]]; do
+    local tick=$((poll < (total_secs - elapsed) ? poll : (total_secs - elapsed)))
+    sleep "$tick"
+    elapsed=$((elapsed + tick))
+    reload_config
+
+    # ENABLED=false -> exit gracefully (responsive pause)
+    if [[ "$ENABLED" != "true" ]]; then
+      echo -e "${YELLOW}World ${WORLD_NAME} disabled via config. Exiting gracefully.${NC}"
+      exit 0
+    fi
+  done
 }
 
 # ─── Main Loop ──────────────────────────────────────────────────
@@ -1105,6 +1219,13 @@ while true; do
   CYCLE=$((CYCLE + 1))
   NOW=$(date +%s)
   TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S')
+
+  # ── Reload config + check enabled ──
+  reload_config
+  if [[ "$ENABLED" != "true" ]]; then
+    echo -e "${YELLOW}World ${WORLD_NAME} disabled via config. Exiting.${NC}"
+    break
+  fi
 
   # ── Check stopping conditions ──
   if [[ $NOW -ge $END_TIME ]]; then
@@ -1151,7 +1272,7 @@ while true; do
         claude
         -p
         --dangerously-skip-permissions
-        --model opus
+        --model "$CLAUDE_MODEL"
         --session-id "$LIFE_UUID"
         --system-prompt "$(cat "$PROMPT_FILE")"
       )
@@ -1161,7 +1282,7 @@ while true; do
       AGENT_CMD=(
         codex exec -
         --full-auto
-        --model gpt-5.3-codex
+        --model "$CODEX_MODEL"
       )
       ;;
   esac
@@ -1172,13 +1293,13 @@ while true; do
     echo ""
     echo "  [DRY RUN] Would execute:"
     if [[ "$AGENT" == "claude" ]]; then
-      echo "    claude -p --dangerously-skip-permissions --model opus \\"
+      echo "    claude -p --dangerously-skip-permissions --model $CLAUDE_MODEL \\"
       echo "      --session-id $LIFE_UUID \\"
       echo "      --system-prompt <immortal-prompt.md> \\"
       [[ -n "$BUDGET" ]] && echo "      --max-budget-usd $BUDGET \\"
       echo "      <prompt with destiny + memorial + recent lives>"
     else
-      echo "    codex exec - --full-auto --model gpt-5.3-codex \\"
+      echo "    codex exec - --full-auto --model $CODEX_MODEL \\"
       echo "      <system-prompt + prompt with destiny + memorial + recent lives>"
     fi
     echo ""
@@ -1213,11 +1334,11 @@ while true; do
     break
   fi
 
-  # ── Sleep between cycles ──
+  # ── Sleep between cycles (with config polling) ──
   if ! $DRY_RUN && [[ $SLEEP_SECS -gt 0 ]]; then
     echo ""
-    echo -e "  ${DIM}Sleeping ${SLEEP_MINUTES}m until next life...${NC}"
-    sleep "$SLEEP_SECS"
+    echo -e "  ${DIM}Sleeping ${SLEEP_MINUTES}m until next life (polling config every ${CONFIG_POLL_SECONDS}s)...${NC}"
+    poll_sleep
   fi
 done
 

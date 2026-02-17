@@ -1,7 +1,7 @@
 {
   "name": "immortals",
-  "version": "2.0.0",
-  "description": "Autonomous life cycle runner — spawns Claude agents as mythological beings that explore, work, and pass wisdom through a grand memorial across lives. Supports isolated worlds with persistent life counters.",
+  "version": "3.0.0",
+  "description": "Autonomous life cycle runner with multi-world orchestration — spawns Claude agents as mythological beings that explore, work, and pass wisdom through a grand memorial. Features hot-reloadable config, hand-of-god universe orchestrator, and optional oversight agent.",
   "author": {
     "name": "PablitoMaestro"
   },
