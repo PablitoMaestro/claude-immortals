@@ -24,6 +24,7 @@ NC='\033[0m'
 
 # ─── Defaults ────────────────────────────────────────────────────
 HOURS=""
+DELAY_SPEC=""
 DRY_RUN=false
 STATUS_MODE=false
 NO_SLEEP=false
@@ -56,6 +57,7 @@ while [[ $# -gt 0 ]]; do
     --worlds)     IFS=' ' read -ra ACTIVE_WORLDS <<< "$2"; _CLI_WORLDS=true; shift 2 ;;
     --poll)       UNIVERSE_POLL_SECONDS="$2"; _CLI_UNIVERSE_POLL_SECONDS="$2";    shift 2 ;;
     --oversight)  OVERSIGHT_HOURS="$2"; _CLI_OVERSIGHT_HOURS="$2";          shift 2 ;;
+    --delay)      DELAY_SPEC="$2";                                         shift 2 ;;
     -h|--help)
       echo "Hand of God — Multi-World Universe Orchestrator"
       echo ""
@@ -63,6 +65,7 @@ while [[ $# -gt 0 ]]; do
       echo ""
       echo "Options:"
       echo "  --hours N          Total runtime for the universe"
+      echo "  --delay DURATION   Delay launch (e.g., 11h, 30m, 2h30m, 45s)"
       echo "  --worlds \"a b c\"   Override ACTIVE_WORLDS from config"
       echo "  --poll N           Override UNIVERSE_POLL_SECONDS (default: 60)"
       echo "  --oversight N      Run oversight agent every N hours (0 = disabled)"
@@ -74,6 +77,9 @@ while [[ $# -gt 0 ]]; do
       echo "Configuration: $GLOBAL_CONFIG"
       echo "  Set ACTIVE_WORLDS=(world1 world2) to define which worlds run."
       echo ""
+      echo "Output: .immortals/universe-status.json"
+      echo "  Machine-readable status file, rewritten every poll cycle."
+      echo ""
       echo "Examples:"
       echo "  # Run two worlds for 8 hours"
       echo "  ./hand-of-god.sh --hours 8"
@@ -83,6 +89,9 @@ while [[ $# -gt 0 ]]; do
       echo ""
       echo "  # Run with oversight agent checking every 4 hours"
       echo "  ./hand-of-god.sh --hours 24 --oversight 4"
+      echo ""
+      echo "  # Delay start by 11 hours, then run for 8 hours"
+      echo "  ./hand-of-god.sh --delay 11h --hours 8"
       echo ""
       echo "  # Check status of all worlds"
       echo "  ./hand-of-god.sh --status"
@@ -136,6 +145,219 @@ format_duration() {
   local h=$((secs / 3600))
   local m=$(((secs % 3600) / 60))
   echo "${h}h ${m}m"
+}
+
+format_timestamp() {
+  local epoch="$1"
+  date -r "$epoch" '+%Y-%m-%d %H:%M:%S' 2>/dev/null \
+    || date -d "@$epoch" '+%Y-%m-%d %H:%M:%S' 2>/dev/null \
+    || echo "N/A"
+}
+
+parse_duration() {
+  local input="$1"
+  local total=0
+  # Try combined format: 2h30m, 1h, 30m, 45s, or raw seconds
+  if [[ "$input" =~ ^([0-9]+h)?([0-9]+m)?([0-9]+s)?$ ]] && [[ -n "$input" ]]; then
+    [[ "$input" =~ ([0-9]+)h ]] && total=$((total + ${BASH_REMATCH[1]} * 3600))
+    [[ "$input" =~ ([0-9]+)m ]] && total=$((total + ${BASH_REMATCH[1]} * 60))
+    [[ "$input" =~ ([0-9]+)s ]] && total=$((total + ${BASH_REMATCH[1]}))
+    echo "$total"
+  elif [[ "$input" =~ ^[0-9]+$ ]]; then
+    echo "$input"
+  else
+    echo "Error: Cannot parse duration '$input'. Use: 11h, 30m, 2h30m, 45s, or raw seconds." >&2
+    return 1
+  fi
+}
+
+get_world_sleep_minutes() {
+  local world="$1"
+  local sleep_min=30  # global default
+  # Global config SLEEP_MINUTES (already sourced)
+  [[ -n "${SLEEP_MINUTES+x}" ]] && sleep_min="$SLEEP_MINUTES"
+  # Per-world override: WORLD_<name>_SLEEP_MINUTES
+  local safe_world="${world//-/_}"
+  local override_var="WORLD_${safe_world}_SLEEP_MINUTES"
+  [[ -n "${!override_var+x}" ]] && sleep_min="${!override_var}"
+  # World-level config.sh override
+  local world_config="$WORLDS_DIR/$world/config.sh"
+  if [[ -f "$world_config" ]]; then
+    local wc_sleep
+    wc_sleep=$(grep -E '^SLEEP_MINUTES=' "$world_config" 2>/dev/null | tail -1 | cut -d= -f2 | tr -d "\"'")
+    [[ -n "$wc_sleep" ]] && sleep_min="$wc_sleep"
+  fi
+  echo "$sleep_min"
+}
+
+oversight_interval_secs() {
+  local secs
+  secs=$(echo "$OVERSIGHT_HOURS * 3600" | bc 2>/dev/null || echo "$((OVERSIGHT_HOURS * 3600))")
+  echo "${secs%.*}"
+}
+
+is_world_enabled() {
+  local world="$1"
+  local safe_world="${world//-/_}"
+  local world_enabled="true"
+  local enabled_var="WORLD_${safe_world}_ENABLED"
+  [[ -n "${!enabled_var+x}" ]] && world_enabled="${!enabled_var}"
+  local world_config="$WORLDS_DIR/$world/config.sh"
+  if [[ -f "$world_config" ]]; then
+    local wc_en
+    wc_en=$(grep -E '^ENABLED=' "$world_config" 2>/dev/null | tail -1 | cut -d= -f2 | tr -d "\"'")
+    [[ -n "$wc_en" ]] && world_enabled="$wc_en"
+  fi
+  echo "$world_enabled"
+}
+
+get_world_alive_agents() {
+  local world="$1"
+  local hb_file="$WORLDS_DIR/$world/.heartbeat"
+  local agents=()
+  if [[ -f "$hb_file" ]]; then
+    while IFS='|' read -r name pid ts agent; do
+      if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+        agents+=("\"${name}\"")
+      fi
+    done < "$hb_file"
+  fi
+  # Return JSON array
+  if [[ ${#agents[@]} -eq 0 ]]; then
+    echo "[]"
+  else
+    local joined
+    joined=$(IFS=,; echo "${agents[*]}")
+    echo "[${joined}]"
+  fi
+}
+
+write_universe_status() {
+  local now_s
+  now_s=$(date +%s)
+  local remaining_secs=$((END_TIME - now_s))
+  [[ $remaining_secs -lt 0 ]] && remaining_secs=0
+  local elapsed_secs=$((now_s - START_TIME))
+
+  # Oversight info
+  local oversight_enabled="false"
+  local oversight_interval_h=0
+  local oversight_last=""
+  local oversight_next_in=""
+  if [[ "$OVERSIGHT_HOURS" != "0" ]]; then
+    oversight_enabled="true"
+    oversight_interval_h="$OVERSIGHT_HOURS"
+    oversight_last=$(format_timestamp "$LAST_OVERSIGHT")
+    local oi_secs
+    oi_secs=$(oversight_interval_secs)
+    local next_oversight_secs=$((LAST_OVERSIGHT + oi_secs - now_s))
+    [[ $next_oversight_secs -lt 0 ]] && next_oversight_secs=0
+    oversight_next_in=$(format_duration "$next_oversight_secs")
+  fi
+
+  # Build worlds array
+  local worlds_json=""
+  local total_died=0
+  local total_estimated=0
+  local total_alive=0
+  local total_stopped=0
+
+  for world in "${ACTIVE_WORLDS[@]}"; do
+    local world_dir="$WORLDS_DIR/$world"
+    [[ -d "$world_dir" ]] || continue
+
+    # Runner status
+    local w_status="stopped"
+    local w_pid=0
+    local w_uptime=""
+    local pid
+    if pid=$(is_runner_alive "$world" 2>/dev/null); then
+      w_status="alive"
+      w_pid=$pid
+      local pid_file="$WORLDS_DIR/$world/.runner-pid"
+      local pid_mtime
+      pid_mtime=$(stat -f %m "$pid_file" 2>/dev/null || stat -c %Y "$pid_file" 2>/dev/null || echo "$now_s")
+      local up_secs=$((now_s - pid_mtime))
+      w_uptime=$(format_duration "$up_secs")
+      total_alive=$((total_alive + 1))
+    else
+      w_uptime="0h 0m"
+      total_stopped=$((total_stopped + 1))
+    fi
+
+    # Life counts
+    local lives_total
+    lives_total=$(get_world_life_count "$world")
+    local baseline
+    baseline=$(get_baseline_lives "$world")
+    [[ "$baseline" == "0" ]] && baseline=$lives_total
+    local died=$((lives_total - baseline))
+    [[ $died -lt 0 ]] && died=0
+    total_died=$((total_died + died))
+
+    # Sleep & estimated remaining
+    local sleep_min
+    sleep_min=$(get_world_sleep_minutes "$world")
+    local estimated=0
+    if [[ $sleep_min -gt 0 ]]; then
+      estimated=$((remaining_secs / (sleep_min * 60)))
+    fi
+    total_estimated=$((total_estimated + estimated))
+
+    # Alive agents
+    local agents_json
+    agents_json=$(get_world_alive_agents "$world")
+
+    # Enabled flag
+    local w_enabled
+    w_enabled=$(is_world_enabled "$world")
+
+    # Append to JSON
+    [[ -n "$worlds_json" ]] && worlds_json+=","
+    worlds_json+="
+    {
+      \"name\": \"${world}\",
+      \"status\": \"${w_status}\",
+      \"pid\": ${w_pid},
+      \"uptime\": \"${w_uptime}\",
+      \"lives_total\": ${lives_total},
+      \"lives_died_this_session\": ${died},
+      \"lives_estimated_remaining\": ${estimated},
+      \"alive_agents\": ${agents_json},
+      \"sleep_minutes\": ${sleep_min},
+      \"enabled\": ${w_enabled}
+    }"
+  done
+
+  # Write JSON
+  cat > "$STATUS_FILE" <<EOF
+{
+  "updated_at": "$(date '+%Y-%m-%d %H:%M:%S')",
+  "universe": {
+    "started_at": "$(format_timestamp "$START_TIME")",
+    "ends_at": "$(format_timestamp "$END_TIME")",
+    "remaining": "$(format_duration "$remaining_secs")",
+    "remaining_secs": ${remaining_secs},
+    "elapsed": "$(format_duration "$elapsed_secs")",
+    "elapsed_secs": ${elapsed_secs},
+    "poll_secs": ${UNIVERSE_POLL_SECONDS},
+    "oversight": {
+      "enabled": ${oversight_enabled},
+      "interval_hours": ${oversight_interval_h},
+      "last_run": "${oversight_last}",
+      "next_in": "${oversight_next_in}"
+    }
+  },
+  "worlds": [${worlds_json}
+  ],
+  "totals": {
+    "lives_died_this_session": ${total_died},
+    "lives_estimated_remaining": ${total_estimated},
+    "worlds_alive": ${total_alive},
+    "worlds_stopped": ${total_stopped}
+  }
+}
+EOF
 }
 
 # ─── Status Mode ─────────────────────────────────────────────────
@@ -200,6 +422,13 @@ if $STATUS_MODE; then
     done
   fi
 
+  # Status file note
+  sf="$IMMORTALS_DIR/universe-status.json"
+  if [[ -f "$sf" ]]; then
+    echo ""
+    echo -e "  ${CYAN}Live status file: .immortals/universe-status.json (updated every ${UNIVERSE_POLL_SECONDS}s)${NC}"
+  fi
+
   echo ""
   echo -e "${BOLD}${BLUE}============================================${NC}"
   exit 0
@@ -220,6 +449,27 @@ if [[ -z "$HOURS" ]]; then
     echo "Error: Must provide --hours N."
     echo "Run with --help for usage."
     exit 1
+  fi
+fi
+
+# ─── Delayed Start ──────────────────────────────────────────────
+if [[ -n "$DELAY_SPEC" ]]; then
+  DELAY_SECS=$(parse_duration "$DELAY_SPEC") || exit 1
+  launch_time=$(($(date +%s) + DELAY_SECS))
+  echo -e "${BOLD}${BLUE}============================================${NC}"
+  echo -e " ${BOLD}Hand of God — Delayed Start${NC}"
+  echo -e "${BOLD}${BLUE}============================================${NC}"
+  echo ""
+  echo "  Delay:    $(format_duration $DELAY_SECS)"
+  echo "  Launch:   $(format_timestamp $launch_time)"
+  echo ""
+  echo -e "${BOLD}${BLUE}============================================${NC}"
+  echo ""
+  if ! $DRY_RUN; then
+    log "Delaying start by $(format_duration $DELAY_SECS). Universe will begin at $(format_timestamp $launch_time)."
+    sleep "$DELAY_SECS"
+  else
+    log "[DRY RUN] Would delay start by $(format_duration $DELAY_SECS)."
   fi
 fi
 
@@ -244,6 +494,7 @@ cleanup_god() {
     log "  Force-killing ${world} (PID ${pid})"
     kill -KILL "$pid" 2>/dev/null
   done
+  rm -f "$STATUS_FILE" 2>/dev/null
   log "${GREEN}Universe shut down.${NC}"
 }
 trap cleanup_god EXIT
@@ -264,18 +515,8 @@ reconcile_worlds() {
     fi
 
     # Check per-world ENABLED flag
-    # Convert hyphens to underscores (bash vars can't contain hyphens)
-    local safe_world="${world//-/_}"
-    local world_enabled="true"
-    local enabled_var="WORLD_${safe_world}_ENABLED"
-    [[ -n "${!enabled_var+x}" ]] && world_enabled="${!enabled_var}"
-    # Also check world-level config
-    local world_config="$world_dir/config.sh"
-    if [[ -f "$world_config" ]]; then
-      local wc_enabled
-      wc_enabled=$(grep -E '^ENABLED=' "$world_config" 2>/dev/null | tail -1 | cut -d= -f2 | tr -d "\"'")
-      [[ -n "$wc_enabled" ]] && world_enabled="$wc_enabled"
-    fi
+    local world_enabled
+    world_enabled=$(is_world_enabled "$world")
 
     if [[ "$world_enabled" != "true" ]]; then
       # Kill if running
@@ -385,7 +626,7 @@ echo -e " ${BOLD}Hand of God — Universe Orchestrator${NC}"
 echo -e "${BOLD}${BLUE}============================================${NC}"
 echo ""
 echo "Configuration:"
-echo "  Hours:          $HOURS (until $(date -r $END_TIME '+%Y-%m-%d %H:%M:%S' 2>/dev/null || date -d @$END_TIME '+%Y-%m-%d %H:%M:%S' 2>/dev/null || echo 'N/A'))"
+echo "  Hours:          $HOURS (until $(format_timestamp $END_TIME))"
 echo "  Active worlds:  ${ACTIVE_WORLDS[*]}"
 echo "  Poll interval:  ${UNIVERSE_POLL_SECONDS}s"
 if [[ "$OVERSIGHT_HOURS" != "0" ]]; then
@@ -393,13 +634,37 @@ if [[ "$OVERSIGHT_HOURS" != "0" ]]; then
 else
   echo "  Oversight:      disabled"
 fi
+[[ -n "$DELAY_SPEC" ]] && echo "  Delayed by:     $(format_duration $DELAY_SECS)"
 $NO_SLEEP && echo "  No-sleep:       pass-through to runners"
 $DRY_RUN  && echo "  Mode:           DRY RUN"
 echo "  Config:         $GLOBAL_CONFIG"
 echo "  Log:            $GOD_LOG"
+echo "  Status file:    .immortals/universe-status.json"
 echo ""
 echo -e "${BOLD}${BLUE}============================================${NC}"
 echo ""
+
+# ─── Baseline Life Snapshots ──────────────────────────────────────
+# bash 3.2 compatible: parallel arrays instead of associative array
+BASELINE_WORLD_NAMES=()
+BASELINE_WORLD_LIVES=()
+for world in "${ACTIVE_WORLDS[@]}"; do
+  BASELINE_WORLD_NAMES+=("$world")
+  BASELINE_WORLD_LIVES+=("$(get_world_life_count "$world")")
+done
+STATUS_FILE="$IMMORTALS_DIR/universe-status.json"
+
+get_baseline_lives() {
+  local target="$1"
+  local i
+  for i in "${!BASELINE_WORLD_NAMES[@]}"; do
+    if [[ "${BASELINE_WORLD_NAMES[$i]}" == "$target" ]]; then
+      echo "${BASELINE_WORLD_LIVES[$i]}"
+      return
+    fi
+  done
+  echo "0"
+}
 
 log "Universe started. Worlds: ${ACTIVE_WORLDS[*]}. Runtime: ${HOURS}h."
 
@@ -423,10 +688,12 @@ while true; do
   # Reconcile: ensure desired worlds are running
   reconcile_worlds
 
+  # Write machine-readable status file
+  write_universe_status
+
   # Check oversight
   if [[ "$OVERSIGHT_HOURS" != "0" ]]; then
-    oversight_interval=$(echo "$OVERSIGHT_HOURS * 3600" | bc 2>/dev/null || echo "$((OVERSIGHT_HOURS * 3600))")
-    oversight_interval=${oversight_interval%.*}  # Strip decimals from bc
+    oversight_interval=$(oversight_interval_secs)
     since_oversight=$((NOW - LAST_OVERSIGHT))
     if [[ $since_oversight -ge $oversight_interval ]]; then
       run_oversight
@@ -449,7 +716,7 @@ echo -e "${BOLD}${BLUE}============================================${NC}"
 echo -e " ${BOLD}Hand of God — Universe Complete${NC}"
 echo -e "${BOLD}${BLUE}============================================${NC}"
 echo "  Worlds:   ${ACTIVE_WORLDS[*]}"
-echo "  Started:  $(date -r $START_TIME '+%Y-%m-%d %H:%M:%S' 2>/dev/null || date -d @$START_TIME '+%Y-%m-%d %H:%M:%S' 2>/dev/null || echo 'N/A')"
+echo "  Started:  $(format_timestamp $START_TIME)"
 echo "  Ended:    $(date '+%Y-%m-%d %H:%M:%S')"
 echo "  Log:      $GOD_LOG"
 for world in "${ACTIVE_WORLDS[@]}"; do

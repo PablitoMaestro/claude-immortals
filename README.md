@@ -76,6 +76,9 @@ Run multiple worlds concurrently with automatic reconciliation:
 # Run with oversight agent checking every 4 hours
 ./.immortals/scripts/hand-of-god.sh --hours 24 --oversight 4
 
+# Delay start by 11 hours, then run for 8 hours
+./.immortals/scripts/hand-of-god.sh --delay 11h --hours 8
+
 # Check status of all worlds
 ./.immortals/scripts/hand-of-god.sh --status
 ```
@@ -89,7 +92,7 @@ An optional Claude instance that periodically evaluates all worlds:
 - Assesses productivity, detects stuck worlds, spots conflicts
 - Writes reports to `.immortals/oversight-log.md`
 - May tune `config.sh` (adjust timeouts, budgets, disable struggling worlds)
-- Never touches destiny files — that's the human's domain
+- May append `## Oversight Notes` to a world's `destiny-prompt.md` with actionable guidance (replaced each run, not accumulated). The human's destiny text above the marker is never modified.
 
 Enable with `OVERSIGHT_HOURS=4` in config or `--oversight 4` flag.
 
@@ -98,12 +101,15 @@ Enable with `OVERSIGHT_HOURS=4` in config or `--oversight 4` flag.
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--hours N` | - | Total runtime for the universe (required) |
+| `--delay DURATION` | - | Delay launch (e.g., `11h`, `30m`, `2h30m`, `45s`) |
 | `--worlds "a b c"` | config | Override `ACTIVE_WORLDS` |
 | `--poll N` | 60 | Seconds between reconciliation checks |
 | `--oversight N` | 0 | Run oversight agent every N hours (0 = disabled) |
 | `--no-sleep` | off | Passed through to world runners |
 | `--dry-run` | - | Preview which worlds would launch |
 | `--status` | - | Show all worlds and runner state |
+
+**Status file**: While running, writes `.immortals/universe-status.json` every poll cycle — machine-readable JSON with remaining time, life stats, alive agents, and health totals. Removed on clean shutdown.
 
 ## File Structure
 
@@ -119,6 +125,7 @@ Everything lives under `.immortals/` in your repo:
     immortal-prompt.md          # System prompt for Claude lives
     immortal-prompt-codex.md    # System prompt for Codex lives
   hand-of-god.log               # Universe orchestrator log
+  universe-status.json          # Machine-readable status (live during runs)
   oversight-log.md              # Oversight agent reports
   worlds-log.md                 # Chronicle of all worlds created
   .active                       # Pointer to the active world

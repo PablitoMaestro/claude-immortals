@@ -65,17 +65,21 @@ Multi-world orchestrator. Manages multiple `immortals.sh` runners concurrently w
 
 Key flags:
 - `--hours N` — Total runtime for the universe (required).
+- `--delay DURATION` — Delay launch by a duration (e.g., `11h`, `30m`, `2h30m`, `45s`, or raw seconds). Dry-run prints delay info but doesn't sleep.
 - `--worlds "a b c"` — Override which worlds to run (default: `ACTIVE_WORLDS` from config).
 - `--poll N` — How often to check world health (default: 60s).
-- `--oversight N` — Run oversight agent every N hours (0 = disabled). The oversight agent reads memorials, evaluates productivity, and may tune `config.sh`.
+- `--oversight N` — Run oversight agent every N hours (0 = disabled). The oversight agent reads memorials, evaluates productivity, may tune `config.sh`, and may append an `## Oversight Notes` section to a world's `destiny-prompt.md` with actionable guidance for immortals. Notes are replaced (not accumulated) each run.
 - `--no-sleep` — Passed through to world runners.
 - `--dry-run` — Preview which worlds would launch.
 - `--status` — Show all worlds and their runner state (alive/stopped/orphan).
+
+**Status file**: While running, hand-of-god writes `.immortals/universe-status.json` every poll cycle — a machine-readable snapshot with remaining time, lives died/planned per world, alive agents, and overall health. Removed on clean shutdown.
 
 Before first use, ensure `ACTIVE_WORLDS` is set in `.immortals/config.sh` (e.g., `ACTIVE_WORLDS=(ideoma origins)`).
 
 Example: `./.immortals/scripts/hand-of-god.sh --worlds "ideoma origins" --hours 24`
 Example: `./.immortals/scripts/hand-of-god.sh --hours 24 --oversight 4`
+Example: `./.immortals/scripts/hand-of-god.sh --delay 11h --hours 8`
 Example: `./.immortals/scripts/hand-of-god.sh --status`
 
 ### Status
@@ -131,6 +135,7 @@ All immortals state lives under `.immortals/` in the repo root:
     immortal-prompt.md          # System prompt for Claude lives
     immortal-prompt-codex.md    # System prompt for Codex lives
   hand-of-god.log               # Universe orchestrator log (created by hand-of-god.sh)
+  universe-status.json          # Machine-readable status (live during hand-of-god runs)
   oversight-log.md              # Oversight agent reports (created by oversight runs)
   worlds-log.md                 # Global log: when each world was created
   .active                       # Single line: name of active world
